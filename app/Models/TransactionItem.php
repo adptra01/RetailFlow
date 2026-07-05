@@ -13,8 +13,8 @@ class TransactionItem extends Model
     use HasFactory;
 
     protected $fillable = [
-        'transaction_id', 'product_id', 'quantity',
-        'unit_price', 'subtotal',
+        'transaction_id', 'product_id', 'product_unit_id', 'unit_name',
+        'quantity', 'unit_price', 'subtotal',
     ];
 
     protected function casts(): array
@@ -33,5 +33,10 @@ class TransactionItem extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function productUnit(): BelongsTo
+    {
+        return $this->belongsTo(ProductUnit::class);
     }
 }

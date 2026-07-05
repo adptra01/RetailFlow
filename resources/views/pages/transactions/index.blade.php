@@ -44,7 +44,7 @@ $transactions = computed(function () {
     return Transaction::query()
         ->withCount('items')
         ->where(function ($q) {
-            $q->where('invoice_number', 'like', '%' . $this->search . '%')->orWhere('customer', 'like', '%' . $this->search . '%');
+            $q->where('invoice_number', 'like', '%' . $this->search . '%')->orWhere('customer_name', 'like', '%' . $this->search . '%');
         })
         ->orderBy($this->sortBy, $this->sortDirection)
         ->paginate(10);
@@ -160,7 +160,7 @@ $methodColors = [
                                 </flux:table.cell>
 
                                 <flux:table.cell>
-                                    {{ $transaction->customer ?: '-' }}
+                                    {{ $transaction->customer_name ?: '-' }}
                                 </flux:table.cell>
 
                                 <flux:table.cell>
@@ -222,7 +222,7 @@ $methodColors = [
                                 <flux:subheading>
                                     {{ $this->viewTransaction->created_at->format('d M Y, H:i') }}
                                     &middot;
-                                    {{ $this->viewTransaction->customer ?: '-' }}
+                                    {{ $this->viewTransaction->customer_name ?: '-' }}
                                 </flux:subheading>
                             </div>
                             <flux:badge size="sm" inset="top bottom">

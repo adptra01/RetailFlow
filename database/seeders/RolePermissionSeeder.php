@@ -20,7 +20,13 @@ class RolePermissionSeeder extends Seeder
             'permissions' => ['view', 'create', 'edit', 'delete'],
             'products' => ['view', 'create', 'edit', 'delete'],
             'categories' => ['view', 'create', 'edit', 'delete'],
+            'brands' => ['view', 'create', 'edit', 'delete'],
+            'suppliers' => ['view', 'create', 'edit', 'delete'],
+            'customers' => ['view', 'create', 'edit', 'delete'],
             'transactions' => ['view', 'create', 'edit', 'delete'],
+            'purchases' => ['view', 'create', 'edit', 'delete'],
+            'stock' => ['view'],
+            'opname' => ['view', 'create'],
             'reports' => ['view'],
             'settings' => ['store', 'profile', 'security'],
         ];
@@ -43,7 +49,14 @@ class RolePermissionSeeder extends Seeder
             $permissions->filter(fn ($p) =>
                 str($p)->startsWith('products.')
                 || str($p)->startsWith('categories.')
+                || str($p)->startsWith('brands.')
+                || str($p)->startsWith('suppliers.')
+                || str($p)->startsWith('customers.')
+                || str($p)->startsWith('purchases.')
+                || str($p)->startsWith('stock.')
+                || str($p)->startsWith('opname.')
                 || $p === 'transactions.view'
+                || $p === 'transactions.create'
                 || $p === 'reports.view'
             )
         );

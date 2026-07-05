@@ -16,7 +16,7 @@ class TransactionFactory extends Factory
         $paid = $total + fake()->randomFloat(2, 0, 100000);
 
         return [
-            'customer' => fake()->name,
+            'customer_name' => fake()->name,
             'invoice_number' => 'INV-'.now()->format('YmdHis').'-'.strtoupper(fake()->unique()->bothify('####')),
             'total_amount' => $total,
             'paid_amount' => $paid,

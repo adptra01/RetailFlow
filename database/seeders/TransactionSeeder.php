@@ -13,11 +13,10 @@ class TransactionSeeder extends Seeder
     public function run(): void
     {
         $users = User::all();
-        $products = Product::all();
+        $products = Product::with('units')->get();
 
         if ($products->isEmpty()) {
             $this->command->warn('Tidak ada produk, lewati TransactionSeeder.');
-
             return;
         }
 
@@ -39,24 +38,30 @@ class TransactionSeeder extends Seeder
 
             foreach ($selectedProducts as $product) {
                 $quantity = rand(1, 3);
-                $unitPrice = $product->price;
+                $baseUnit = $product->units()->where('is_base', true)->first() ?? $product->units()->first();
+                if (!$baseUnit) continue;
+
+                $unitPrice = $baseUnit->price > 0 ? $baseUnit->price : $product->price;
                 $subtotal = $quantity * $unitPrice;
                 $totalAmount += $subtotal;
 
                 $items[] = [
                     'product_id' => $product->id,
+                    'product_unit_id' => $baseUnit->id,
+                    'unit_name' => $baseUnit->name,
                     'quantity' => $quantity,
                     'unit_price' => $unitPrice,
                     'subtotal' => $subtotal,
                 ];
             }
 
-            $paidAmount = $totalAmount + rand(0, 3) * 5000;
+            if (empty($items)) continue;
 
+            $paidAmount = $totalAmount + rand(0, 3) * 5000;
             $createdAt = now()->subDays(rand(0, 30))->setTime(rand(7, 21), rand(0, 59));
 
             $transaction = Transaction::create([
-                'customer' => $customers[array_rand($customers)],
+                'customer_name' => $customers[array_rand($customers)],
                 'invoice_number' => 'INV-'.$createdAt->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
                 'total_amount' => $totalAmount,
                 'paid_amount' => $paidAmount,

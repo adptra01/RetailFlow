@@ -26,9 +26,17 @@ class DatabaseSeeder extends Seeder
         $pemilik->assignRole('pemilik');
 
         $this->call([
+            BrandSeeder::class,
+            SupplierSeeder::class,
+            CustomerSeeder::class,
             CategorySeeder::class,
             ProductSeeder::class,
             TransactionSeeder::class,
+            PurchaseOrderSeeder::class,
+            StockMovementSeeder::class,
+            StockOpnameSeeder::class,
+            ReturnSeeder::class,
+            PaymentSeeder::class,
             SettingSeeder::class,
         ]);
     }

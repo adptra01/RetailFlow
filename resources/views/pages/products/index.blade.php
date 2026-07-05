@@ -41,9 +41,11 @@ $sort = function ($column) {
 
 $products = computed(function () {
     return Product::query()
-        ->with('category')
+        ->with(['category', 'brand', 'units'])
         ->where(function ($q) {
-            $q->where('name', 'like', '%' . $this->search . '%')->orWhere('sku', 'like', '%' . $this->search . '%');
+            $q->where('name', 'like', '%' . $this->search . '%')
+              ->orWhere('sku', 'like', '%' . $this->search . '%')
+              ->orWhere('barcode', 'like', '%' . $this->search . '%');
         })
         ->orderBy($this->sortBy, $this->sortDirection)
         ->paginate(10);
@@ -62,7 +64,9 @@ $unlimitedStockProducts = computed(function () {
 });
 
 $lowStockProducts = computed(function () {
-    return Product::where('is_unlimited_stock', false)->where('stock', '>', 0)->where('stock', '<', 5)->count();
+    return Product::where('is_unlimited_stock', false)->where('stock', '>', 0)
+        ->where(function ($q) { $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5); })
+        ->count();
 });
 
 $outOfStockProducts = computed(function () {
@@ -75,7 +79,7 @@ $confirmDelete = function ($id) {
 };
 
 $viewProduct = function ($id) {
-    $this->detailProduct = Product::with('category')->findOrFail($id);
+    $this->detailProduct = Product::with(['category', 'brand', 'supplier', 'units'])->findOrFail($id);
     $this->showDetailModal = true;
 };
 
@@ -160,6 +164,10 @@ $delete = function () {
                             {{ __('Category') }}
                         </flux:table.column>
 
+                        <flux:table.column>
+                            {{ __('Brand') }}
+                        </flux:table.column>
+
                         <flux:table.column sortable :sorted="$sortBy === 'sku'" :direction="$sortDirection"
                             wire:click="sort('sku')">
                             {{ __('SKU') }}
@@ -167,7 +175,7 @@ $delete = function () {
 
                         <flux:table.column sortable :sorted="$sortBy === 'price'" :direction="$sortDirection"
                             wire:click="sort('price')">
-                            {{ __('Price') }}
+                            {{ __('Harga Jual') }}
                         </flux:table.column>
 
                         <flux:table.column sortable :sorted="$sortBy === 'stock'" :direction="$sortDirection"
@@ -200,6 +208,10 @@ $delete = function () {
                                     </flux:badge>
                                 </flux:table.cell>
 
+                                <flux:table.cell>
+                                    <span class="text-xs text-zinc-500">{{ $product->brand?->name ?? '-' }}</span>
+                                </flux:table.cell>
+
                                 <flux:table.cell variant="strong">
                                     <code class="text-xs">{{ $product->sku }}</code>
                                 </flux:table.cell>
@@ -216,27 +228,22 @@ $delete = function () {
                                     @else
                                         @php
                                             $stock = $product->stock;
-                                            $color = $stock <= 0 ? 'red' : ($stock < 5 ? 'amber' : 'green');
-                                            $bgClass =
-                                                $stock <= 0
-                                                    ? 'bg-rose-500'
-                                                    : ($stock < 5
-                                                        ? 'bg-amber-500'
-                                                        : 'bg-emerald-500');
-                                            $percentage = min(100, ($stock / 20) * 100);
+                                            $min = max(1, $product->min_stock ?: 5);
+                                            $color = $stock <= 0 ? 'red' : ($stock < $min ? 'amber' : 'green');
+                                            $bgClass = $stock <= 0 ? 'bg-rose-500' : ($stock < $min ? 'bg-amber-500' : 'bg-emerald-500');
+                                            $percentage = min(100, ($stock / ($min * 2)) * 100);
                                         @endphp
-                                        <div class="flex w-32 flex-col gap-1.5">
+                                        <div class="flex w-44 flex-col gap-1.5">
                                             <div class="flex items-center justify-between">
                                                 <flux:badge :color="$color" size="sm" inset="top bottom">
-                                                    {{ $stock }}
+                                                    {{ $product->total_stock_label }}
                                                 </flux:badge>
                                                 <span class="text-[10px] font-medium text-zinc-500">
-                                                    {{ $stock <= 0 ? __('Critical') : ($stock < 5 ? __('Low Stock') : __('Healthy')) }}
+                                                    {{ $stock <= 0 ? __('Critical') : ($stock < $min ? __('Low Stock') : __('Healthy')) }}
                                                 </span>
                                             </div>
                                             <div class="h-1.5 w-full rounded-full bg-zinc-100 dark:bg-zinc-700">
-                                                <div class="h-1.5 rounded-full {{ $bgClass }}"
-                                                    style="width: {{ $percentage }}%"></div>
+                                                <div class="h-1.5 rounded-full {{ $bgClass }}" style="width: {{ $percentage }}%"></div>
                                             </div>
                                         </div>
                                     @endif

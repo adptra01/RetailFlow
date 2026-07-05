@@ -174,8 +174,8 @@ mount(function (Transaction $transaction) {
             <div>No: {{ $transaction->invoice_number }}</div>
             <div>Tgl: {{ $transaction->created_at->format('d/m/Y H:i') }}</div>
             <div>Kasir: {{ $transaction->user?->name ?? __('System') }}</div>
-            @if($transaction->customer)
-                <div>Plgn: {{ $transaction->customer }}</div>
+            @if($transaction->customer_name && $transaction->customer_name !== 'Umum')
+                <div>Plgn: {{ $transaction->customer_name }}</div>
             @endif
         </div>
 

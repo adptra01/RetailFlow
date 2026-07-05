@@ -23,6 +23,8 @@ class SecurityTest extends TestCase
             'confirm' => true,
             'confirmPassword' => true,
         ]);
+
+        app()->setLocale('en');
     }
 
     public function test_security_settings_page_can_be_rendered(): void

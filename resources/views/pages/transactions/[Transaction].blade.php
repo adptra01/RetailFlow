@@ -22,7 +22,7 @@ state(['transaction', 'customer' => '', 'category_id' => '', 'productSearch' => 
 
 mount(function (Transaction $transaction) {
     $this->transaction = $transaction;
-    $this->customer = $transaction->customer;
+    $this->customer = $transaction->customer_name;
     $this->payment_method = $transaction->payment_method;
     $this->paid_amount = (float) $transaction->paid_amount;
     $this->notes = $transaction->notes;

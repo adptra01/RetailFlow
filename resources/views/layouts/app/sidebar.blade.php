@@ -14,80 +14,157 @@
         </flux:sidebar.header>
 
         <flux:sidebar.nav>
-            <flux:sidebar.group :heading="__('Analitik & Transaksi')" class="grid">
+            {{-- Dashboard --}}
+            <flux:sidebar.group :heading="__('Ringkasan')" class="grid">
                 <flux:sidebar.item icon="home" :href="route('dashboard')" :current="request()->routeIs('dashboard')">
                     {{ __('Dashboard') }}
                 </flux:sidebar.item>
+            </flux:sidebar.group>
 
-                @can('transactions.view')
-                <flux:sidebar.item icon="document-text" href="{{ route('transactions.index') }}">
-                    {{ __('Transactions') }}
+            {{-- Penjualan --}}
+            <flux:sidebar.group :heading="__('Penjualan')" class="grid mt-4">
+                @can('transactions.create')
+                <flux:sidebar.item icon="plus-circle" href="{{ route('transactions.create') }}"
+                    :current="request()->routeIs('transactions.create')">
+                    {{ __('POS') }}
                 </flux:sidebar.item>
                 @endcan
 
-                @can('reports.view')
-                <flux:sidebar.item icon="chart-bar-square" href="{{ route('reports.index') }}">
-                    {{ __('Laporan') }}
+                @can('transactions.view')
+                <flux:sidebar.item icon="document-text" href="{{ route('transactions.index') }}"
+                    :current="request()->routeIs('transactions.index')">
+                    {{ __('Transaksi') }}
+                </flux:sidebar.item>
+
+                <flux:sidebar.item icon="arrow-uturn-left" href="/returns/sales"
+                    :current="request()->routeIs('returns.sales.*')">
+                    {{ __('Retur Penjualan') }}
+                </flux:sidebar.item>
+
+                <flux:sidebar.item icon="credit-card" href="/payments/customer"
+                    :current="request()->routeIs('payments.customer.*')">
+                    {{ __('Piutang Customer') }}
                 </flux:sidebar.item>
                 @endcan
             </flux:sidebar.group>
 
+            {{-- Pembelian --}}
+            @can('purchases.view')
+            <flux:sidebar.group :heading="__('Pembelian')" class="grid mt-4">
+                <flux:sidebar.item icon="truck" href="/purchases"
+                    :current="request()->routeIs('purchases.*')">
+                    {{ __('Purchase Order') }}
+                </flux:sidebar.item>
+
+                <flux:sidebar.item icon="arrow-uturn-left" href="/returns/purchase"
+                    :current="request()->routeIs('returns.purchase.*')">
+                    {{ __('Retur Pembelian') }}
+                </flux:sidebar.item>
+
+                <flux:sidebar.item icon="banknotes" href="/payments/supplier"
+                    :current="request()->routeIs('payments.supplier.*')">
+                    {{ __('Hutang Supplier') }}
+                </flux:sidebar.item>
+            </flux:sidebar.group>
+            @endcan
+
+            {{-- Master Data --}}
             @can('products.view')
-            <flux:sidebar.group :heading="__('Manajemen Produk')" class="grid mt-4">
-                <flux:sidebar.item icon="shopping-bag" href="{{ route('products.index') }}">
-                    {{ __('Products') }}
+            <flux:sidebar.group :heading="__('Master Data')" class="grid mt-4">
+                <flux:sidebar.item icon="shopping-bag" href="{{ route('products.index') }}"
+                    :current="request()->routeIs('products.*')">
+                    {{ __('Produk') }}
                 </flux:sidebar.item>
 
                 @can('categories.view')
-                <flux:sidebar.item icon="folder-git-2" href="{{ route('categories.index') }}">
-                    {{ __('Kategori Produk') }}
+                <flux:sidebar.item icon="folder-git-2" href="{{ route('categories.index') }}"
+                    :current="request()->routeIs('categories.*')">
+                    {{ __('Kategori') }}
+                </flux:sidebar.item>
+                @endcan
+
+                @can('brands.view')
+                <flux:sidebar.item icon="tag" href="/brands"
+                    :current="request()->routeIs('brands.*')">
+                    {{ __('Brand') }}
+                </flux:sidebar.item>
+                @endcan
+
+                @can('suppliers.view')
+                <flux:sidebar.item icon="building-storefront" href="/suppliers"
+                    :current="request()->routeIs('suppliers.*')">
+                    {{ __('Supplier') }}
+                </flux:sidebar.item>
+                @endcan
+
+                @can('customers.view')
+                <flux:sidebar.item icon="users" href="/customers"
+                    :current="request()->routeIs('customers.*')">
+                    {{ __('Pelanggan') }}
                 </flux:sidebar.item>
                 @endcan
             </flux:sidebar.group>
             @endcan
 
+            {{-- Inventory --}}
+            <flux:sidebar.group :heading="__('Inventory')" class="grid mt-4">
+                @can('stock.view')
+                <flux:sidebar.item icon="archive-box" href="/stock-movements"
+                    :current="request()->routeIs('stock-movements.*')">
+                    {{ __('Mutasi Stok') }}
+                </flux:sidebar.item>
+                @endcan
+
+                @can('opname.view')
+                <flux:sidebar.item icon="clipboard-document-list" href="/stock-opnames"
+                    :current="request()->routeIs('stock-opnames.*')">
+                    {{ __('Stock Opname') }}
+                </flux:sidebar.item>
+                @endcan
+            </flux:sidebar.group>
+
+            {{-- Laporan --}}
+            @can('reports.view')
+            <flux:sidebar.group :heading="__('Laporan')" class="grid mt-4">
+                <flux:sidebar.item icon="chart-bar-square" href="{{ route('reports.index') }}">
+                    {{ __('Laporan') }}
+                </flux:sidebar.item>
+            </flux:sidebar.group>
+            @endcan
+
+            {{-- Admin --}}
             @can('users.view')
-            <flux:sidebar.group :heading="__('Keamanan & Akses')" class="grid mt-4">
-                <flux:sidebar.item icon="users" href="/users">
+            <flux:sidebar.group :heading="__('Pengaturan')" class="grid mt-4">
+                <flux:sidebar.item icon="users" href="/users"
+                    :current="request()->routeIs('users.*')">
                     {{ __('Users') }}
                 </flux:sidebar.item>
 
                 @can('roles.view')
-                <flux:sidebar.item icon="shield-check" href="/roles">
+                <flux:sidebar.item icon="shield-check" href="/roles"
+                    :current="request()->routeIs('roles.*')">
                     {{ __('Roles') }}
                 </flux:sidebar.item>
                 @endcan
 
                 @can('permissions.view')
-                <flux:sidebar.item icon="key" href="/permissions">
+                <flux:sidebar.item icon="key" href="/permissions"
+                    :current="request()->routeIs('permissions.*')">
                     {{ __('Permissions') }}
                 </flux:sidebar.item>
                 @endcan
-            </flux:sidebar.group>
-            @endcan
 
-            @can('settings.store')
-            <flux:sidebar.group :heading="__('Konfigurasi')" class="grid mt-4">
-                <flux:sidebar.item icon="cog-6-tooth" href="/settings/store">
+                @can('settings.store')
+                <flux:sidebar.item icon="cog-6-tooth" href="/settings/store"
+                    :current="request()->routeIs('settings.*')">
                     {{ __('Store Settings') }}
                 </flux:sidebar.item>
+                @endcan
             </flux:sidebar.group>
             @endcan
         </flux:sidebar.nav>
 
         <flux:spacer />
-
-        {{-- <flux:sidebar.nav>
-            <flux:sidebar.item icon="folder-git-2" href="https://github.com/laravel/livewire-starter-kit"
-                target="_blank">
-                {{ __('Repository') }}
-            </flux:sidebar.item>
-
-            <flux:sidebar.item icon="book-open-text" href="https://laravel.com/docs/starter-kits#livewire"
-                target="_blank">
-                {{ __('Documentation') }}
-            </flux:sidebar.item>
-        </flux:sidebar.nav> --}}
 
         <x-desktop-user-menu class="hidden lg:block" :name="auth()->user()->name" />
     </flux:sidebar>

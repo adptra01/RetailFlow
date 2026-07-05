@@ -14,8 +14,8 @@ class Transaction extends Model
     use HasFactory;
 
     protected $fillable = [
-        'customer', 'invoice_number', 'total_amount',
-        'paid_amount', 'change_amount', 'payment_method', 'notes',
+        'user_id', 'customer_id', 'customer_name', 'invoice_number', 'total_amount',
+        'paid_amount', 'change_amount', 'payment_method', 'payment_status', 'notes',
     ];
 
     protected function casts(): array
@@ -30,6 +30,11 @@ class Transaction extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
     }
 
     public function items(): HasMany

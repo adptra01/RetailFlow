@@ -17,7 +17,9 @@ $transactionsToday = computed(function () {
 });
 
 $lowStockCount = computed(function () {
-    return Product::where('is_unlimited_stock', false)->where('stock', '>', 0)->where('stock', '<', 5)->count();
+    return Product::where('is_unlimited_stock', false)->where('stock', '>', 0)
+        ->where(function ($q) { $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5); })
+        ->count();
 });
 
 $salesTrendData = computed(function () {
