@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "lerd": {
+            "args": [
+                "mcp"
+            ],
+            "command": "lerd",
+            "env": {
+                "LERD_SITE_PATH": "/mnt/DiskD/Projects/laravel_pos"
+            }
+        }
+    }
+}
