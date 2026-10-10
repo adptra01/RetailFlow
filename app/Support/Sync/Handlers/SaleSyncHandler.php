@@ -55,6 +55,8 @@ final class SaleSyncHandler implements SyncOperationHandler
         $data['device_id'] = $operation->device_id;
         $data['client_request_id'] = $operation->operation_id;
         $data['allow_negative_stock'] = $allowNegativeStock;
+        // Jangan memantulkan operasi perangkat kembali ke outbox server (§11.1).
+        $data['enqueue_for_sync'] = false;
 
         try {
             $transaction = (new CreateSale)->handle($data);

@@ -85,6 +85,7 @@ class SyncStatusUiTest extends TestCase
         $this->assertSame('pending', $summary['state']);
         $this->assertSame(1, $summary['pending']);
         $this->assertSame(1, $summary['in_flight']);
+        $this->assertSame(2, $summary['queued']);
         $this->assertSame(2, $summary['pending_user_visible']);
         $this->assertNotNull($summary['oldest_pending_at']);
     }

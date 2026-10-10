@@ -3,6 +3,7 @@
 namespace App\Actions\Sales;
 
 use App\Enums\AuditAction;
+use App\Enums\SyncOperationType;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Models\AuditLog;
@@ -13,6 +14,7 @@ use App\Models\StockMovement;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Support\Money\Money;
+use App\Support\Sync\Outbox;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +39,12 @@ use Illuminate\Support\Str;
  *    into the customer balance;
  *  - traceability: every unit of stock leaving the shelf is recorded in the
  *    ledger with reference_type "sale" (FR-08);
+ *  - offline-ready (§17.3 langkah 9 / §11.1): bila penjualan berasal dari
+ *    perangkat (`device_id` ada), satu operasi outbox ditulis DI DALAM
+ *    transaksi yang sama (transactional outbox) agar penjualan offline tidak
+ *    hilang saat crash dan dapat dikirim ke server. Pemanggil dapat
+ *    mematikannya dengan `enqueue_for_sync => false` (dipakai sisi server saat
+ *    menerapkan operasi dari perangkat, agar tidak memantul);
  *  - honest money: all amounts are integer minor units (FR-04 / §17.1).
  *
  * Money math (IDR minor exponent 0, see config/pos.php):
@@ -73,6 +81,7 @@ class CreateSale
      *     notes?: string|null,
      *     tenant_id?: string|null,
      *     allow_negative_stock?: bool|null,
+     *     enqueue_for_sync?: bool|null,
      * } $data
      */
     public function handle(array $data): Transaction
@@ -229,7 +238,81 @@ class CreateSale
             ],
         ]);
 
+        $this->enqueueForSync($data, $transaction, $items, $tenantId, $clientRequestId);
+
         return $transaction->load('items');
+    }
+
+    /**
+     * §17.3 langkah 9 + §11.1: setiap perubahan yang perlu dikirim masuk ke
+     * antrean outbox, DI DALAM transaksi domain yang sama (transactional
+     * outbox) sehingga tidak hilang saat crash.
+     *
+     * Hanya berlaku bila penjualan berasal dari perangkat (`device_id` ada).
+     * Penerapan ulang sisi server (mis. `SaleSyncHandler`) mematikan ini lewat
+     * `enqueue_for_sync => false` agar tidak memantulkan operasi yang sama
+     * kembali ke antrean (§11.1 idempotensi).
+     *
+     * @param  array<string, mixed>  $data
+     * @param  list<array<string, mixed>>  $items
+     */
+    private function enqueueForSync(
+        array $data,
+        Transaction $transaction,
+        array $items,
+        ?string $tenantId,
+        ?string $clientRequestId,
+    ): void {
+        $deviceId = $data['device_id'] ?? null;
+
+        if ($deviceId === null || $tenantId === null) {
+            return;
+        }
+
+        if (($data['enqueue_for_sync'] ?? true) === false) {
+            return;
+        }
+
+        (new Outbox($tenantId))->enqueue(
+            (string) $deviceId,
+            'sale',
+            $transaction->uuid,
+            SyncOperationType::Create,
+            $this->syncPayload($data, $items),
+            $clientRequestId,
+        );
+    }
+
+    /**
+     * Payload operasi sinkronisasi penjualan: cukup untuk membangun ulang
+     * penjualan di server lewat `CreateSale` (dipakai `SaleSyncHandler`).
+     *
+     * @param  array<string, mixed>  $data
+     * @param  list<array<string, mixed>>  $items
+     * @return array<string, mixed>
+     */
+    private function syncPayload(array $data, array $items): array
+    {
+        return [
+            'user_id' => $data['user_id'],
+            'customer_id' => $data['customer_id'] ?? null,
+            'customer_name' => $data['customer_name'] ?? null,
+            'payment_method' => $data['payment_method'] ?? 'cash',
+            'paid_minor' => (int) ($data['paid_minor'] ?? 0),
+            'discount_minor' => $data['discount_minor'] ?? null,
+            'discount_percent' => $data['discount_percent'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'location_id' => $data['location_id'] ?? null,
+            'items' => array_map(static fn (array $item): array => [
+                'product_id' => $item['product_id'],
+                'quantity' => $item['quantity'],
+                'unit_price_minor' => $item['unit_price_minor'],
+                'product_unit_id' => $item['product_unit_id'],
+                'unit_name' => $item['unit_name'],
+                'conversion_factor' => $item['conversion_factor'],
+                'discount_minor' => $item['discount_minor'],
+            ], $items),
+        ];
     }
 
     /**

@@ -57,6 +57,8 @@ final class ResolveSyncConflict
                 'device_id' => $conflict->device_id,
                 'client_request_id' => $operation->operation_id,
                 'allow_negative_stock' => true,
+                // Penyelesaian sisi server tidak memantul ke outbox (§11.1).
+                'enqueue_for_sync' => false,
             ]);
 
             $operation->markApplied($transaction->uuid);

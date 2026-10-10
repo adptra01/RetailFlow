@@ -150,7 +150,7 @@ $stateBadge = function (string $state): array {
                     <p class="text-sm text-zinc-500">{{ __('Operasi tertunda') }}</p>
                     <p class="mt-1 text-2xl font-bold">{{ $summary['pending_user_visible'] ?? 0 }}</p>
                     <p class="mt-1 text-xs text-zinc-500">
-                        {{ __('Menunggu') }}: {{ $summary['pending'] ?? 0 }}
+                        {{ __('Menunggu') }}: {{ $summary['queued'] ?? 0 }}
                     </p>
                 </div>
 

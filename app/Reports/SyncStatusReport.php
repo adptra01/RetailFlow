@@ -39,7 +39,9 @@ class SyncStatusReport
         $counts = $this->outboxCounts();
         $openConflicts = $this->openConflictCount();
 
-        $pending = $counts[SyncStatus::Pending->value] + $counts[SyncStatus::InFlight->value];
+        $pending = $counts[SyncStatus::Pending->value];
+        $inFlight = $counts[SyncStatus::InFlight->value];
+        $queued = $pending + $inFlight;
         $failed = $counts[SyncStatus::Failed->value];
         $conflict = $counts[SyncStatus::Conflict->value];
         $synced = $counts[SyncStatus::Synced->value];
@@ -47,15 +49,16 @@ class SyncStatusReport
 
         return [
             'device_id' => $this->deviceId,
-            'state' => $this->resolveState($pending, $failed, $conflict, $openConflicts, $synced, $total),
+            'state' => $this->resolveState($queued, $failed, $conflict, $openConflicts, $synced, $total),
             'pending' => $pending,
-            'in_flight' => $counts[SyncStatus::InFlight->value],
+            'in_flight' => $inFlight,
+            'queued' => $queued,
             'failed' => $failed,
             'conflict' => $conflict,
             'synced' => $synced,
             'total' => $total,
             // §11.5: jumlah operasi tertunda yang terlihat pengguna.
-            'pending_user_visible' => $pending + $failed + $conflict,
+            'pending_user_visible' => $queued + $failed + $conflict,
             'open_conflicts' => $openConflicts,
             'last_synced_at' => $this->lastSyncedAt()?->toIso8601String(),
             'oldest_pending_at' => $this->oldestPendingAt()?->toIso8601String(),
@@ -180,7 +183,7 @@ class SyncStatusReport
     }
 
     private function resolveState(
-        int $pending,
+        int $queued,
         int $failed,
         int $conflict,
         int $openConflicts,
@@ -191,7 +194,7 @@ class SyncStatusReport
             return 'attention';
         }
 
-        if ($pending > 0) {
+        if ($queued > 0) {
             return 'pending';
         }
 

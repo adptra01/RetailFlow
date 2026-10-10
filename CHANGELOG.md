@@ -1,3 +1,32 @@
+# Rebuild POS Universal — Fase 4: Status sinkronisasi UI (Sprint 4, item 8) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 8 "Status sinkronisasi UI", §11.3 langkah 11, §11.5, §12, §13).
+
+## Perubahan
+
+### Read model
+- **`App\\Reports\\SyncStatusReport`** — status sinkronisasi untuk UI (murni baca): hitung antrean outbox per status (`pending`/`in_flight`/`queued`/`failed`/`conflict`/`synced`/`total`), `pending_user_visible` (§11.5 "menampilkan jumlah operasi tertunda"), `open_conflicts`, `last_synced_at`, `oldest_pending_at`, dan satu `state` untuk ditampilkan (`attention`/`pending`/`synced`/`unknown`). Juga `openConflicts()` dan `unsyncedOperations()`.
+
+### Aksi
+- **`App\\Actions\\Sync\\SyncNow`** — satu putaran sinkronisasi manual dari UI: validasi perangkat (ada & tidak dicabut, §15), token dari parameter atau `config('pos.sync.device_token')`, jalankan `PushOutbox` (§11.3), perbarui heartbeat perangkat, kembalikan `SyncPushSummary`.
+- **`config/pos.php` → `sync.device_token`** (env `POS_SYNC_DEVICE_TOKEN`) — token perangkat instalasi ini untuk tombol "Sinkronkan sekarang".
+
+### UI
+- **`resources/views/pages/sync/index.blade.php`** (Folio/Volt, route `sync.index`) — badge keadaan, info perangkat + heartbeat, kartu ringkasan (operasi tertunda, tersinkron + waktu terakhir, gagal, konflik terbuka), tabel **konflik terbuka** dengan aksi Terapkan/Tutup (tombol hanya untuk pemegang izin `stock.adjust`, FR-12), dan tabel operasi belum tersinkron. Tombol **Sinkronkan sekarang** memanggil `SyncNow` dan menampilkan hasil via toast.
+- **`resources/views/layouts/app/sidebar.blade.php`** — grup "Sistem" berisi tautan **Sinkronisasi**.
+
+## Test (`tests/Feature/Sync/SyncStatusUiTest.php`, 11)
+- `state` transition: `unknown` (kosong) → `pending` (antrean) → `synced` (setelah putaran sukses) → `attention` (gagal/konflik terbuka).
+- Daftar operasi belum tersinkron mengecualikan yang sudah `synced`.
+- `SyncNow`: menolak tanpa token; menolak perangkat dicabut; mengirim antrean yang siap, menandai `synced`, memperbarui heartbeat (`last_seen_at`).
+- Halaman: tamu dialihkan ke login; pengguna terautentikasi dapat membuka halaman (`Status Sinkronisasi`).
+
+## Status suite
+- **351 passed / 0 failed / 6 skipped** (1167 assertions). Pint bersih.
+
+---
+
 # Rebuild POS Universal — Fase 4: Konflik stok (Sprint 4, item 7) (belum dirilis)
 
 **Tanggal:** 11 Oktober 2026
