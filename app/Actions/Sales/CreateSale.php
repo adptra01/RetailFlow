@@ -7,6 +7,7 @@ use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Product;
+use App\Models\Receivable;
 use App\Models\StockMovement;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
@@ -189,7 +190,20 @@ class CreateSale
         if ($isCredit && $customer) {
             $unpaid = $total->subtract($paid);
 
+            // Transitional mirror: the customer balance is a derived cache and
+            // is only ever touched by domain actions (FR-07).
             $customer->increment('balance', $unpaid->major());
+
+            // §17.3 step 6: a receivable is born from the unpaid balance.
+            Receivable::create([
+                'tenant_id' => $tenantId,
+                'customer_id' => $customer->id,
+                'transaction_id' => $transaction->id,
+                'original_amount_minor' => $unpaid->minor(),
+                'remaining_minor' => $unpaid->minor(),
+                'due_at' => null,
+                'status' => 'open',
+            ]);
         }
 
         AuditLog::create([

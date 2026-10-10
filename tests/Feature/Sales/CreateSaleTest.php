@@ -240,6 +240,13 @@ class CreateSaleTest extends TestCase
             'customer_name' => 'Budi Santoso',
             'payment_status' => 'credit',
         ]);
+        $this->assertDatabaseHas('receivables', [
+            'transaction_id' => $sale->id,
+            'customer_id' => $customer->id,
+            'original_amount_minor' => 5000,
+            'remaining_minor' => 5000,
+            'status' => 'open',
+        ]);
     }
 
     public function test_full_paid_sale_does_not_touch_customer_balance(): void

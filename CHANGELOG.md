@@ -1,3 +1,63 @@
+# Rebuild POS Universal — Fase 3: Alert lokal + stok minimum (FR-10) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, FR-10 Alert, §17.2 `alerts`)
+
+## Perubahan
+
+### Skema (migration baru)
+- `2026_10_10_000014` (DDL): tabel `alerts` — uuid (sync identity), tenant_id, device_id nullable ("jika lokal"), `alert_type`, `deduplication_key`, `severity` (info|warning|critical), `payload` JSON, `read_at`, `version`, timestamps; indeks komposit `(tenant_id, deduplication_key)`.
+- Deduplikasi sengaja TIDAK memakai unique constraint: dedup diaplikasikan terhadap alert **belum dibaca** dengan key yang sama, sehingga kondisi yang bertahan tidak memicu alert berulang, tetapi kondisi yang muncul kembali setelah alert dibaca tetap bisa dibunyikan (respawn).
+
+### Domain
+- **`Alert`** model (BelongsToTenant, HasSyncIdentity): konstanta tipe (`stock.low`, `product.incomplete_data`, `receivable.due`) + severity; scope `unread()`; helper `markAsRead()`.
+- **`AlertGenerator`** (layanan): tiga kategori kondisi-lokal (FR-10 butir 1–2; butir piutang jatuh tempo juga termasuk):
+  1. `stock.low` — produk non-unlimited dengan `min_stock > 0` dan `stock <= min_stock` (warning);
+  2. `product.incomplete_data` — produk tanpa harga jual (> 0) atau tanpa barcode (warning);
+  3. `receivable.due` — piutang open dengan `due_at` lewat (critical).
+  - Payload berisi `action` (aksi yang disarankan) + `target` (navigasi) sesuai FR-10.
+  - Deterministik bila `tenantId` eksplisit (auto-scope tenant dimatikan); tanpa `tenantId` mengikuti konteks request.
+- **`pos:alerts:generate`** (command): iterasi semua tenant, memanggil generator; didaftarkan di scheduler `routes/console.php` — `hourly()->withoutOverlapping()` (perlu scheduler berjalan, mis. cron `php artisan schedule:run`).
+
+### Test
+- `tests/Feature/Alerts/AlertGeneratorTest.php` (12 test): pembuatan alert stok menipis (payload + dedup key + severity), dedup berulang tidak mengganda saat belum dibaca, respawn setelah dibaca, tanpa alert saat stok cukup, abaikan unlimited/`min_stock=0`, produk tanpa harga/barcode, tanpa alert saat data lengkap, piutang lewat jatuh tempo (critical), belum jatuh tempo / closed / tanpa due_at → tanpa alert, batas tenant, dan command console untuk semua tenant.
+
+## Catatan
+- UI alert (bell + daftar + aksi mark-as-read) menyusul di irisan UI Fase 3/4; irisan ini menyiapkan skema + mesin + test (pola domain-first).
+- Alert piutang jatuh tempo memakai `due_at`; UI piutang (pengaturan tenggat) masih irisan terpisah — payload `target` sementara `/customers`.
+- Tidak ada regresi: suite penuh **101 passed / 0 failed / 6 skipped**; Pint bersih (6 files).
+
+---
+
+# Rebuild POS Universal — Fase 3 (awal): Piutang dasar (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, FR-07 Piutang, §17.2 `receivables`/`receivable_payments`, §17.3 step 6)
+
+## Perubahan
+
+### Skema (migration baru)
+- `2026_10_10_000012` (DDL): tabel `receivables` + `receivable_payments`.
+  - `receivables`: uuid (sync identity), tenant_id, customer_id, transaction_id (plan `sale_id` → tabel transaksi selama rebuild), `original_amount_minor`, `remaining_minor` (cache atomik "sisa saldo" — hanya boleh diubah domain actions), `due_at` nullable, `status` open|closed, version.
+  - `receivable_payments`: uuid, tenant_id, receivable_id, `payment_id` nullable (dicadangkan untuk tabel `payments` Fase 5, tanpa FK), amount_minor, payment_method, recorded_by, `client_request_id` unik (idempotensi), notes, paid_at, version.
+- `2026_10_10_000013` (DML backfill, terpisah per §16): buat receivable untuk semua transaksi `payment_status='credit'` lama tanpa receivable; lewati baris terisi (idempoten).
+
+### Domain actions
+- `CreateSale` dilengkapi **§17.3 langkah 6**: penjualan kredit kini membentuk `Receivable` (original = remaining = saldo belum dibayar, status open) dalam satu transaksi atomik; `customers.balance` tetap mirror transisi (hanya disentuh domain actions).
+- **`RecordReceivablePayment`** (baru): entry point pembayaran piutang dengan jaminan yang sama seperti checkout — atomik, **idempoten** (`client_request_id`), row-lock receivable, jumlah harus positif dan ≤ sisa, receivable tertutup tidak bisa dibayar lagi, `remaining_minor` + status ditutup saat lunas, mirror `customers.balance` dikurangi (tidak pernah negatif), audit `receivable.payment`.
+- Exception baru `ReceivableClosed` (422 JSON); overpay/amount invalid memakai `InvalidPaymentAmount`.
+
+### Test
+- `tests/Feature/Receivables/ReceivableTest.php` (9 test): pembentukan piutang dari saldo belum dibayar, lunas penuh tanpa piutang, pembayaran sebagian (sisa berkurang, tetap open), pelunasan (closed), overpay ditolak + rollback, bayar receivable tertutup ditolak, amount 0/negatif ditolak, idempotensi replay, audit log.
+- `CreateSaleTest.test_partial_payment_...` diperluas: assert receivable terbentuk (original/remaining 5000, open).
+
+## Catatan
+- UI piutang (daftar jatuh tempo + form pembayaran) menyusul di irisan Fase 3 berikutnya; irisan ini domain + skema + test (pola sama seperti Fase 2).
+- `customers.balance` (decimal) masih mirror transisi; increment berikutnya bisa menurunkan dari penjumlahan receivable.
+- Tidak ada regresi: suite penuh **89 passed / 0 failed / 6 skipped**; Pint bersih (11 files).
+
+---
+
 # Rebuild POS Universal — Fase 2 (lanjutan): Checkout UI → Domain Action (belum dirilis)
 
 **Tanggal:** 10 Oktober 2026
