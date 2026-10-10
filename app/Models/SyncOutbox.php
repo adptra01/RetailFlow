@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Enums\SyncStatus;
+use App\Support\Sync\Backoff;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -116,9 +118,47 @@ class SyncOutbox extends Model
         return $this;
     }
 
+    /**
+     * Hasil pengiriman tidak diketahui (timeout/koneksi, §11.3). Operasi
+     * tetap dapat diulang dan TIDAK dianggap gagal permanen: status kembali
+     * `pending`, `retry_count` bertambah sebagai dasar backoff.
+     */
+    public function markRetryPending(string $error): self
+    {
+        return $this->transitionToRetry($error);
+    }
+
+    /**
+     * Waktu paling awal entri ini boleh dicoba lagi, mengikuti backoff.
+     */
+    public function nextAttemptAt(): CarbonInterface
+    {
+        $base = $this->updated_at ?? $this->created_at ?? now();
+
+        return $base->copy()->addSeconds(Backoff::delayFor($this->retry_count));
+    }
+
+    /**
+     * Entri siap dicoba sekarang (backoff sudah lewat).
+     */
+    public function isReadyForAttempt(?CarbonInterface $now = null): bool
+    {
+        return $this->nextAttemptAt()->lessThanOrEqualTo($now ?? now());
+    }
+
     private function transitionTo(SyncStatus $status): self
     {
         $this->sync_status = $status;
+        $this->save();
+
+        return $this;
+    }
+
+    private function transitionToRetry(string $error): self
+    {
+        $this->sync_status = SyncStatus::Pending;
+        $this->last_error = $error;
+        $this->retry_count++;
         $this->save();
 
         return $this;

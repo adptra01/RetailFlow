@@ -4,12 +4,13 @@ namespace App\Models;
 
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasSyncIdentity;
+use App\Models\Concerns\JournalSyncChanges;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class StockMovement extends Model
 {
-    use BelongsToTenant, HasSyncIdentity;
+    use BelongsToTenant, HasSyncIdentity, JournalSyncChanges;
 
     protected $attributes = ['version' => 1];
 

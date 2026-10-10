@@ -1,3 +1,87 @@
+# Rebuild POS Universal — Fase 4: Cursor sinkronisasi (Sprint 4, item 4) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 4 "Cursor sinkronisasi", §11.1 prinsip, §11.3 langkah 9–10, §12 "version atau cursor yang sesuai", §17 tabel, §18 `GET /api/v1/sync/pull?cursor=...`).
+
+## Perubahan
+
+### Jurnal perubahan sisi server (`sync_changes`)
+- **Migration `2026_10_10_000018_create_sync_changes_table.php`** — append-only: `sequence` (bigint naik = **kursor**), `tenant_id`, `entity_type`, `entity_id`, `operation`, `payload` (snapshot JSON), `device_id` (asal perubahan; null = server/web), `created_at`. Indeks `(tenant_id, sequence)` & `(entity_type, entity_id)`.
+  - Kursor berupa `sequence` monoton menjamin urutan total tanpa bergantung pada resolusi `updated_at` — memenuhi §12 "version atau cursor yang sesuai".
+- **`App\Enums\SyncChangeOperation`** — `created`, `updated`, `deleted`.
+- **`App\Models\SyncChange`** — PK `sequence`; cast enum/array; relasi `tenant`/`device`; scope `forTenant`/`afterSequence`; tanpa `updated_at` (append-only).
+
+### Perekaman perubahan
+- **`App\Support\Sync\SyncChangeJournal`** — menulis satu baris `sync_changes` per perubahan. Tenant diambil dari record lalu `TenantContext`; `device_id` dari `DeviceContext`. Payload memakai `attributesToArray()` sehingga cast diterapkan dan atribut `$hidden` (mis. `password`) dikecualikan. Perubahan tanpa tenant (seeder/CLI) **dilewati** karena `sync_changes.tenant_id` wajib dan tidak ada tenant tujuan.
+- **`App\Models\Concerns\JournalSyncChanges`** — menulis jurnal pada event `created`/`updated`/`deleted`. Diterapkan pada model bisnis: **Product, Category, Customer, Transaction, TransactionItem, StockMovement, Receivable, ReceivablePayment**. Karena berjalan di dalam transaksi domain, baris jurnal ikut atomik (rollback domain → jurnal batal).
+
+### Feed kursor
+- **`App\Support\Sync\DatabaseSyncChangeFeed implements SyncChangeFeed`** — mengembalikan perubahan tenant dengan `sequence > cursor`, urut naik, dibatasi `limit`; `has_more` diisi bila masih ada lanjutan; `cursor` = `sequence` terakhir yang dikirim (atau kursor lama bila tidak ada perubahan).
+- Binding `SyncChangeFeed` di `AppServiceProvider` dialihkan dari `NullSyncChangeFeed` → `DatabaseSyncChangeFeed` (adaptor null tetap tersedia sebagai fallback/uji).
+- `SyncPullController` kini mengembalikan perubahan nyata dan memperbarui `devices.last_sync_cursor` bila kursor berubah.
+
+## Test (`tests/Feature/Sync/CursorTest.php`, 13 test)
+- Jurnal: create/update/delete tercatat dengan entity/uuid/tenant/payload; record tanpa tenant dilewati; **atomik terhadap rollback transaksi**; `device_id` asal; payload mengecualikan atribut `$hidden`.
+- Feed: urut `sequence`; hanya setelah kursor; **paginasi tanpa terlewat/ganda**; isolasi tenant; melempar tanpa tenant.
+- Endpoint: pull mengembalikan perubahan nyata + menyimpan `last_sync_cursor`, pull ulang dengan kursor sama tidak mengulang; paginasi `limit` + `has_more`.
+
+## Catatan
+
+- `version` pada record **tidak** di-bump pada item ini (kolom `version` sudah ada, tetapi belum bermakna). Penambahan perilaku versi dan deteksi konflik adalah lingkup item Sprint 4 berikutnya ("Deteksi konflik"); kolom `version` sengaja tidak dimasukkan ke jurnal agar tidak menyajikan data menyesatkan.
+- Perubahan domain yang **diterapkan dari operasi push** belum terjadi (operasi `sync_inbox` masih `received`); belum ada baris jurnal yang berasal dari penerapan push.
+- Perangkat belum memfilter perubahan miliknya sendiri (echo aman karena penerapan bersifat idempoten).
+
+## Status suite
+- **302 passed / 0 failed / 6 skipped** (972 assertions). Pint bersih pada seluruh berkas baru/berubah.
+
+---
+
+# Rebuild POS Universal — Fase 4: API push/pull (Sprint 4, item 3) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 3 "API push/pull", §11.1 prinsip sinkronisasi, §11.3 proses langkah 4–7, §12 verifikasi tenant, §15 kredensial perangkat, §18 endpoint `POST /api/v1/sync/push` & `GET /api/v1/sync/pull`, §17 tabel).
+
+## Perubahan
+
+### Transport & autentikasi perangkat
+- **`routes/api.php`** — API berversi `/api/v1`: `POST sync/push`, `GET sync/pull`; keduanya di bawah middleware `device`.
+- **`bootstrap/app.php`** — mendaftarkan `routes/api.php` sebagai grup `api` dan alias middleware `device`.
+- **`App\Http\Middleware\AuthenticateDevice`** — membaca token dari `Authorization: Bearer` atau `X-Device-Token`, memverifikasi lewat `Device::findByToken` (perangkat dicabut/tak dikenal → 401), mengikat `TenantContext` + `DeviceContext`, dan menandai heartbeat (`last_seen_at`, `X-App-Version` → `app_version`).
+  - **Tenant diambil dari perangkat terautentikasi, bukan body request** (§12: "Jangan mengandalkan `tenant_id` dari request pengguna tanpa memverifikasinya").
+
+### Inbox sisi server (`sync_inbox`)
+- **Migration `2026_10_10_000017_create_sync_inbox_table.php`** — cermin sisi server dari outbox: `id` (bigint naik = urutan server monoton), `operation_id` (uuid **unik**), `tenant_id`, `device_id`, `entity_type`, `entity_id`, `operation_type`, `payload`, `local_sequence`, `status`, `error`, `received_at`, timestamps.
+  - **Keputusan**: tabel ini tidak disebut eksplisit di §17 (yang hanya memuat `sync_outbox` sisi klien), tetapi diperlukan untuk memenuhi §11.3 langkah 6 ("Server menyimpan operasi yang sah dalam transaksi") dan §11.1 ("aman terhadap pengiriman ulang"). Bersifat aditif dan tidak mengubah tabel inti.
+- **`App\Enums\SyncInboxStatus`** — `received` (default), `applied`, `rejected`, `conflict`.
+- **`App\Models\SyncInbox`** — casts enum/array, relasi `tenant`/`device`, scope `forDevice`/`withStatus`, `serverSequence()`.
+
+### Use case & endpoint
+- **`App\Actions\Sync\ReceiveSyncPush`** — menyimpan batch operasi dalam **satu transaksi**; `operation_id` unik membuat pengiriman ulang idempoten (operasi yang sudah ada → `duplicate`, tanpa baris baru); `tenant_id`/`device_id` dari identitas terautentikasi.
+- **`App\Http\Requests\Sync\SyncPushRequest`** — validasi batch (`operations` array 1..`pos.sync.max_batch`, `operation_id` uuid + `distinct`, `operation_type` ∈ `create|update|delete`, `local_sequence` ≥ 1).
+- **`App\Http\Requests\Sync\SyncPullRequest`** — `cursor` opsional, `limit` opsional (1..500).
+- **`App\Http\Controllers\Api\V1\SyncPushController`** — mengembalikan `accepted`, `duplicates`, dan `results` per operasi (langkah 7).
+- **`App\Http\Controllers\Api\V1\SyncPullController`** — mengembalikan envelope `{device_id, tenant_id, server_time, cursor, has_more, changes}`; menyimpan `last_sync_cursor` perangkat bila kursor berubah.
+
+### Seam sumber perubahan (`SyncChangeFeed`)
+- **`App\Support\Sync\SyncChangeFeed`** (kontrak) + **`SyncChangeBatch`** (DTO readonly) + **`NullSyncChangeFeed`** (adaptor default, mengembalikan perubahan kosong).
+- Di-bind di `AppServiceProvider`; implementasi kursor sebenarnya menjadi lingkup item Sprint 4 berikutnya. Pola ini konsisten dengan keputusan seam printer (port + adaptor null) agar endpoint tetap dapat diuji tanpa mengarang semantik kursor.
+
+### Konfigurasi
+- `config/pos.php` `sync.max_batch` (env `POS_SYNC_MAX_BATCH`, default 500).
+
+## Test (`tests/Feature/Sync/SyncApiTest.php`, 15 test)
+- Push: 401 tanpa token / token tak dikenal / perangkat dicabut; penyimpanan operasi dengan tenant+perangkat terautentikasi; **identitas payload diabaikan**; idempotensi `operation_id` (duplikat → `duplicate`, tetap 1 baris); validasi bentuk batch (kosong, `operation_type` tak dikenal, `operation_id` bukan uuid, duplikat dalam batch, melebihi `max_batch`); heartbeat + `app_version`; isolasi antar-tenant/perangkat.
+- Pull: 401 tanpa token; envelope kursor; `cursor`/`limit` (validasi batas); tenant dari perangkat, bukan query parameter.
+
+## Status suite
+- **289 passed / 0 failed / 6 skipped** (934 assertions). Pint bersih pada seluruh berkas baru/berubah.
+
+## Catatan
+- Operasi pada `sync_inbox` belum **diterapkan ke domain** (masih `received`); penerapan, idempotensi penerapan, dan deteksi konflik stok adalah lingkup item Sprint 4 berikutnya.
+- `SyncChangeFeed` masih adaptor kosong sampai item "Cursor sinkronisasi".
+
+---
+
 # Rebuild POS Universal — Fase 4: Outbox sinkronisasi (Sprint 4, item 2) (belum dirilis)
 
 **Tanggal:** 11 Oktober 2026

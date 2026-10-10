@@ -6,6 +6,7 @@ use App\Enums\SyncOperationType;
 use App\Enums\SyncStatus;
 use App\Models\SyncOutbox;
 use App\Support\Tenancy\TenantContext;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
 
@@ -92,6 +93,51 @@ final class Outbox
             ->orderBy('local_sequence')
             ->limit($limit ?? $this->batchSize())
             ->get();
+    }
+
+    /**
+     * Entri retryable yang jeda backoff-nya sudah lewat (§11.5). Percobaan
+     * pertama (`retry_count = 0`) selalu siap.
+     *
+     * @return Collection<int, SyncOutbox>
+     */
+    public function readyForAttempt(
+        string $deviceId,
+        ?int $limit = null,
+        ?CarbonInterface $now = null,
+    ): Collection {
+        $now ??= now();
+
+        return SyncOutbox::query()
+            ->forDevice($deviceId)
+            ->retryable()
+            ->orderBy('local_sequence')
+            ->limit($limit ?? $this->batchSize())
+            ->get()
+            ->filter(fn (SyncOutbox $entry): bool => $entry->isReadyForAttempt($now))
+            ->values();
+    }
+
+    /**
+     * Pakai ulang entri `in_flight` yang terbengkalai karena crash/proses
+     * mati di tengah pengiriman (§13). Kembalikan jumlah entri yang dipulihkan.
+     */
+    public function resetStaleInFlight(
+        string $deviceId,
+        ?int $timeoutSeconds = null,
+        ?CarbonInterface $now = null,
+    ): int {
+        $now ??= now();
+        $timeout = $timeoutSeconds ?? (int) config('pos.sync.in_flight_timeout', 300);
+
+        return SyncOutbox::query()
+            ->forDevice($deviceId)
+            ->where('sync_status', SyncStatus::InFlight->value)
+            ->where('updated_at', '<=', $now->copy()->subSeconds($timeout))
+            ->update([
+                'sync_status' => SyncStatus::Pending->value,
+                'updated_at' => $now,
+            ]);
     }
 
     /**

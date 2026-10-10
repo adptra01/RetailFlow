@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasSyncIdentity;
+use App\Models\Concerns\JournalSyncChanges;
 use Database\Factories\TransactionItemFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -12,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class TransactionItem extends Model
 {
     /** @use HasFactory<TransactionItemFactory> */
-    use BelongsToTenant, HasFactory, HasSyncIdentity;
+    use BelongsToTenant, HasFactory, HasSyncIdentity, JournalSyncChanges;
 
     protected $attributes = ['version' => 1];
 

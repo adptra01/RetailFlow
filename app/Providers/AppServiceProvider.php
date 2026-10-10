@@ -9,7 +9,7 @@ use App\Observers\StockObserver;
 use App\Printing\NullReceiptPrinter;
 use App\Printing\ReceiptPrinter;
 use App\Support\Devices\DeviceContext;
-use App\Support\Sync\NullSyncChangeFeed;
+use App\Support\Sync\DatabaseSyncChangeFeed;
 use App\Support\Sync\SyncChangeFeed;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
@@ -35,9 +35,10 @@ class AppServiceProvider extends ServiceProvider
         // Port printer: adaptor default no-op (printer opsional, §20).
         $this->app->bind(ReceiptPrinter::class, NullReceiptPrinter::class);
 
-        // Sumber perubahan untuk pull: adaptor kosong sampai item Sprint 4.4
-        // (cursor sinkronisasi) menyediakan implementasi sebenarnya.
-        $this->app->bind(SyncChangeFeed::class, NullSyncChangeFeed::class);
+        // Sumber perubahan untuk pull: jurnal `sync_changes` (item Sprint 4.4
+        // "Cursor sinkronisasi"). `NullSyncChangeFeed` tersedia sebagai
+        // adaptor kosong untuk pengujian/fallback.
+        $this->app->bind(SyncChangeFeed::class, DatabaseSyncChangeFeed::class);
     }
 
     /**
