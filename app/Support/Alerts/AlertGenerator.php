@@ -2,16 +2,20 @@
 
 namespace App\Support\Alerts;
 
+use App\Backup\BackupManager;
 use App\Models\Alert;
 use App\Models\Product;
 use App\Models\Receivable;
+use App\Support\Tenancy\TenantContext;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Menghasilkan alert lokal (FR-10) dari kondisi yang bisa dilihat data lokal:
  *  1. stok di bawah ambang minimum (stock.low);
  *  2. produk tanpa harga jual atau barcode (product.incomplete_data);
- *  3. piutang yang jatuh tempo (receivable.due).
+ *  3. piutang yang jatuh tempo (receivable.due);
+ *  4. backup terakhir terlalu lama (backup.overdue, FR-10 daftar alert).
  *
  * Deduplikasi: alert baru hanya dibuat bila tidak ada alert dengan
  * `deduplication_key` yang sama dan masih belum dibaca — jadi kondisi yang
@@ -24,7 +28,10 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class AlertGenerator
 {
-    public function __construct(private readonly ?string $tenantId = null) {}
+    public function __construct(
+        private readonly ?string $tenantId = null,
+        private readonly ?BackupManager $backups = null,
+    ) {}
 
     /**
      * Jalankan semua kategori alert.
@@ -35,7 +42,8 @@ class AlertGenerator
     {
         return $this->stockLow()
             + $this->incompleteProducts()
-            + $this->receivablesDue();
+            + $this->receivablesDue()
+            + $this->backupOverdue();
     }
 
     public function stockLow(): int
@@ -129,6 +137,41 @@ class AlertGenerator
         }
 
         return $created;
+    }
+
+    public function backupOverdue(): int
+    {
+        $latest = ($this->backups ?? BackupManager::forDefault())->latest();
+
+        // Belum pernah backup bukan kategori "terlalu lama" (anti-noise).
+        if ($latest === null) {
+            return 0;
+        }
+
+        $maxAgeDays = (int) config('pos.backup.max_age_days', 7);
+
+        if (! Carbon::parse($latest->createdAt)->lt(now()->subDays($maxAgeDays))) {
+            return 0;
+        }
+
+        $tenantId = $this->tenantId ?? app(TenantContext::class)->id();
+
+        if ($tenantId === null) {
+            return 0;
+        }
+
+        return $this->createIfNew(
+            Alert::TYPE_BACKUP_OVERDUE,
+            'backup.overdue',
+            Alert::SEVERITY_WARNING,
+            [
+                'last_backup_at' => $latest->createdAt,
+                'max_age_days' => $maxAgeDays,
+                'action' => 'Buat backup sekarang',
+                'target' => '/reports',
+            ],
+            $tenantId,
+        );
     }
 
     /**

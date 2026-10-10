@@ -174,16 +174,16 @@ class ImportProductsTest extends TestCase
     public function test_commit_applies_defaults_for_optional_fields(): void
     {
         $result = $this->import()->commit([
-            ['line' => 2, 'name' => 'Tanpa Data Lengkap', 'price' => '1000', 'is_active' => 'tidak'],
+            ['line' => 2, 'name' => 'Tanpa Data Lengkap', 'sku' => 'TANPA-01', 'price' => '1000', 'is_active' => 'tidak'],
         ]);
 
         $this->assertSame(1, $result->created);
 
         $product = Product::first();
-        $this->assertNull($product->sku);
+        $this->assertSame('TANPA-01', $product->sku);
         $this->assertNull($product->barcode);
         $this->assertNotNull($product->category_id);
-        $this->assertNull($product->buy_price);
+        $this->assertEquals(0.0, (float) $product->buy_price);
         $this->assertSame(0, $product->stock);
         $this->assertSame(0, $product->min_stock);
         $this->assertFalse($product->is_active);
@@ -191,6 +191,18 @@ class ImportProductsTest extends TestCase
         $category = Category::first();
         $this->assertSame('Tanpa Kategori', $category->name);
         $this->assertSame('tanpa-kategori', $category->slug);
+    }
+
+    public function test_missing_sku_is_rejected(): void
+    {
+        $row = $this->row();
+        unset($row['sku']);
+
+        $result = $this->import()->preview([$row]);
+
+        $this->assertSame(1, $result->failed);
+        $this->assertStringContainsString('SKU wajib diisi', $result->rows[0]['errors'][0]);
+        $this->assertSame(0, Product::count());
     }
 
     public function test_invalid_price_variants_are_rejected(): void

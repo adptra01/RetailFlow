@@ -1,3 +1,113 @@
+# Rebuild POS Universal — Fase 3: Backup & pemulihan (FR-11) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, Sprint 3 "Backup dan pemulihan", FR-11 §394–405, plan §21 Backup/restore/migrasi §1311–1342, use case BackupOverdue alert §10.2, skenario test §22)
+
+## Perubahan
+
+### Domain (`app/Backup/` — use case `CreateBackup` / `RestoreBackup`)
+- **`BackupDriver`** (interface adapter, plan §11 "Adapter server database"):
+  - `SqliteBackupDriver` — snapshot konsisten via **`VACUUM INTO`** (mekanisme resmi SQLite; tanpa binary `sqlite3`, jadi aman di perangkat pengguna/NativePHP); restore: validasi `PRAGMA integrity_check` sumber → salin ke file temporer → **rename atomik** → bersihkan sidecar `-wal`/`-shm` basi → verifikasi lagi; tolak `:memory:` (sasaran restore = database file / "database baru", §22).
+  - `MysqlBackupDriver` — dump via **`spatie/db-dumper`** (kelas `MariaDb`, `--single-transaction` = snapshot konsisten §21 + `--routines`; kredensial via `--defaults-extra-file`, tidak tampil di daftar proses); restore via klien `mysql` dengan **`MYSQL_PWD`** (bukan `-p`); isHealthy via `SELECT 1`.
+  - `BackupDriverFactory` — pilih driver dari `database.default` (sqlite | mysql/mariadb; selain itu → `UnsupportedBackupDriver`).
+- **`BackupInfo`** (readonly VO): filename, path, size, checksum `sha256:`, schema_version, app_version, driver, encrypted, created_at; `fromFile`/`fromArray`/`checksumMatches`.
+- **`BackupManager`** (use case FR-11):
+  - `create(?directory, ?encrypt)` — snapshot ke file temporer dulu (create yang gagal tidak pernah masuk manifest), enkripsi opsional AES-256-CBC via **APP_KEY** (`Crypt`), sidecar `*.meta.json` (checksum + versi skema) ditulis atomik, **`manifest.json`** mencatat `last_backup_at` + daftar backup (FR-11 "waktu backup terakhir"); `--path=` mendukung media eksternal dan tetap terdaftar di manifest.
+  - `restore(backup, force)` — alur wajib: cek file → **validasi integritas (checksum)** → **validasi versi skema** (backup berskema lebih baru ditolak) → **konfirmasi eksplisit `--force`** → **snapshot keselamatan database aktif dibuat otomatis** sebelum menimpa (§21) → restore → pemeriksaan kesehatan pasca-restore; metadata hilang → ditolak (ekspor data BUKAN pengganti backup yang konsisten, per FR-11); backup terenkripsi didekripsi ke file temporer lalu diverifikasi ulang saat restore.
+  - `latest()` / `all()` / `manifestPath()` — untuk observability §23 dan alert `backup.overdue`.
+- **Exception `app/Exceptions/Backup/`** (pola render `ReceivableClosed`): `BackupException` (basis, 422), `BackupNotFound` (404), `BackupCorrupted` (422), `BackupSchemaMismatch` (422), `BackupRequiresConfirmation` (422), `BackupFailed` (500), `UnsupportedBackupDriver` (500).
+
+### CLI
+- `pos:backup:create {--path=} {--encrypt}` — backup manual (FR-11 MVP: manual), output path + ukuran + driver + skema + enkripsi.
+- `pos:backup:restore {backup} {--force}` — restore dengan validasi & konfirmasi; gagal tanpa `--force`, menampilkan path snapshot keselamatan.
+- `pos:backup:status` — waktu backup terakhir + tabel daftar backup (FR-11 "Sistem menampilkan waktu backup terakhir").
+- `BackupManager` dibind sebagai singleton di `AppServiceProvider` (komando resolve dari container → mudah diganti di test).
+
+### Konfigurasi (`config/pos.php`)
+- `pos.version` (default `0.4.0`), `pos.schema_version` (default `0.4.0`, §21 "Setiap rilis memiliki versi skema database").
+- `pos.backup.path` (default `storage_path('app/backups')`), `pos.backup.encrypt` (default `false`, opsi FR-11), `pos.backup.max_age_days` (default 7).
+
+### Alert (FR-10 + FR-11)
+- `Alert::TYPE_BACKUP_OVERDUE` (`'backup.overdue'`) + `AlertGenerator::backupOverdue()` — alert bila backup terakhir lebih tua dari `pos.backup.max_age_days`; belum pernah backup tidak alert (anti-noise); dedup FR-10 (unread) dihormati; masuk ke `run()` + deskripsi `pos:alerts:generate` + komentar scheduler.
+
+### Test (+33)
+- `SqliteBackupDriverTest` (6): snapshot konsisten (isi + integrity_check), restore atomik menimpa target, menolak file korup, menolak `:memory:` (create & restore), isHealthy.
+- `MysqlBackupDriverTest` (4): nama driver; perintah dump memuat `--single-transaction` + `--routines` + credentials file tanpa password; argumen klien `mysql` tanpa password; health check.
+- `BackupManagerTest` (12): create → dump+sidecar+manifest; direktori eksternal terdaftar di manifest; restore wajib konfirmasi; file di-tamper → `BackupCorrupted`; skema masa depan → `BackupSchemaMismatch`; metadata hilang → ditolak; restore ke "database baru" + snapshot keselamatan otomatis berisi kondisi lama; file hilang → `BackupNotFound`; urutan `latest()`/`all()` terbaru-dulu; direktori kosong; enkripsi round-trip (plaintext tidak bocor, restore berhasil); kunci salah → ditolak.
+- `BackupCommandsTest` (5): `pos:backup:create` (default & `--path` eksternal), `pos:backup:status`, restore tanpa `--force` gagal dengan pesan konfirmasi, restore `--force` memulihkan database yang sengaja dirusak.
+- `BackupOverdueTest` (6): konstanta tipe; alert dibuat saat backup basi (payload `last_backup_at`); dedup unread lalu respawn setelah dibaca; backup fresh → 0; belum pernah backup → 0; ter-wire di `run()`.
+
+## Catatan
+- **Keputusan dependency (hasil riset, permintaan user):** untuk SQLite/native, paket `spatie/db-dumper` justru kurang cocok (butuh binary `sqlite3` di mesin pengguna + dump teks-SQL); snapshot resmi SQLite (`VACUUM INTO`) tersedia langsung di PHP → **driver SQLite tanpa dependency**. Untuk MySQL/MariaDB (web), `spatie/db-dumper` dipertahankan (maintained v4.1.1 Mei 2026, kelas `MariaDb`, PHP 8.4 di DDEV). `spatie/laravel-backup` tetap TIDAK dipakai (tidak ada restore + enkripsi di luar kotak; 80% domain tetap harus dibangun sendiri).
+- Laravel 13 tidak punya `db:snapshot`/`DatabaseSnapshots` — driver sendiri + `VACUUM INTO`/`mariadb-dump` adalah penggantinya (sudah tertulis di atas).
+- Tanpa migration — FR-11 tidak mengubah skema (hanya domain + konfigurasi).
+- **Catatan gotcha test:** `TestCase::seed()` (public, milik Laravel) bentrok dengan helper `seed()` — helper diberi nama `seedItems()`; `Encrypter` Laravel 13 menerima key **raw bytes** (`generateKey`), bukan `base64:` string (dekode dilakukan provider, bukan konstruktor); direktori induk file sqlite test harus dibuat dulu (`storage/app/testing`).
+- Tidak ada regresi: suite penuh **168 passed / 0 failed / 6 skipped** (+33 dari 135); Pint bersih.
+
+---
+
+# Rebuild POS Universal — Fase 3: Laporan harian (FR-09) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, Sprint 3 "Laporan harian", FR-09, use case `GenerateReport` §10.2, `GET /api/v1/reports/sales`)
+
+## Perubahan
+
+### Domain (tanpa migration — laporan hanya baca data yang sudah ada)
+- **`SalesReport`** (use case `GenerateReport`):
+  - `daily(?date)` / `range(from, to)` — metrik per periode (rentang diurutkan otomatis, inklusif, default hari ini):
+    - `omzet_minor` (Σ total_minor, termasuk kredit), `penerimaan_minor` (Σ paid_minor kasir), `piutang_baru_minor` (Σ bagian belum dibayar transaksi kredit) — **tiga angka berbeda**, sesuai aturan FR-09 "Omzet, penerimaan kas, piutang, dan laba tidak boleh diperlakukan sebagai angka yang sama";
+    - `transaksi_count`, `transaksi_kredit_count`, `transaksi_berdiskon_count`, `rata_rata_transaksi_minor`, `diskon_minor` (Σ diskon transaksi + Σ diskon item), `metode_pembayaran` (count + omzet + penerimaan per metode);
+    - `produk_terlaris` (kuantitas desc, dengan omzet per produk), `stok_menipis` (query kondisi, bukan pembuatan alert), `riwayat` (500 transaksi terbaru, urut terbaru dulu);
+  - `metricDefinitions()` — definisi metrik yang wajib disebut laporan (FR-09);
+  - transaksi yang dihapus (SoftDeletes) tidak dihitung; tenant deterministik bila `tenantId` eksplisit.
+- **`CsvExporter`** — ekspor CSV (FR-09 "Ekspor CSV"): UTF-8 BOM (Excel), delimiter default `;` (konvensi ID), sel berisi delimiter/kutip/baris-baru di-quote dengan kutip didobel, kunci hilang/null → kosong.
+
+### Test
+- `SalesReportTest` (10): pemisahan omzet vs penerimaan vs piutang (penagihan piutang via `RecordReceivablePayment` TIDAK mengubah metrik kasir), rentang tanggal, diskon transaksi+item, ringkasan metode bayar, produk terlaris (urutan + omzet per produk), stok menipis (hanya di bawah minimum, unlimited diabaikan), riwayat terbaru-dulu, hari kosong → nol semua, definisi metrik, batas tenant.
+- `CsvExporterTest` (3): header+baris+BOM, quoting (delimiter, kutip, baris baru), kunci hilang/null.
+
+## Catatan
+- Penagihan piutang (receivable_payments) sengaja TIDAK tercampur ke `penerimaan_minor` (dokumentasi di definisi metrik); laporan piutang/umur piutang adalah laporan lanjutan.
+- UI laporan terpisah dari halaman `reports` legacy (masih memakai kolom `total_amount`); integrasi UI baru ke `SalesReport` + ekspor menyusul di irisan UI.
+- Tidak ada regresi: suite penuh **135 passed / 0 failed / 6 skipped**; Pint bersih (4 files).
+- Gotcha terkonfirmasi: `created_at` tidak dapat di-override lewat `Model::create` (tidak ada di `$fillable` → dibuang lalu di-set fresh); helper test memakai `forceCreate`.
+
+---
+
+# Rebuild POS Universal — Fase 3: Impor produk (FR-02) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, Sprint 3 "Impor CSV dengan validasi", FR-02, use case `ImportProducts` §10.2)
+
+## Perubahan
+
+### Domain (tanpa migration — impor tidak mengubah skema)
+- **`ProductCsvParser`** — parser CSV produk:
+  - Header memakai alias Indonesia/Inggris (mis. `nama`/`name`, `harga_jual`/`price`, `stok`/`stock`, `aktif`/`is_active`);
+  - delimiter dideteksi otomatis (`;`, `,`, tab); baris kosong & komentar `#` dilewati (template berisi contoh baris berkomentar);
+  - sel dengan tanda kutip (koma di dalam nilai) didukung; baris dengan jumlah kolom tidak sama dilaporkan sebagai kesalahan tingkat berkas (dengan nomor baris sumber) dan dikeluarkan — dasar "mekanisme koreksi" FR-02;
+  - kolom tidak dikenal & header duplikat dilaporkan, parsing tetap lanjut;
+  - `template()` menyediakan berkas contoh untuk diunduh UI.
+- **`ProductImportResult`** — laporan terstruktur per baris: `line` sumber, status `failed|valid|created`, daftar kesalahan per kolom, dan `product_id` untuk baris tercipta; ringkasan `total/valid/failed/created`.
+- **`ImportProducts`** (use case):
+  - `preview()` — validasi semua baris + laporan kesalahan TANPA menulis (pratinjau FR-02); `commit()` — baris valid disimpan dalam satu transaksi atomik, baris gagal dilaporkan untuk dikoreksi lalu diimpor ulang;
+  - validasi: nama wajib (≤200), **SKU wajib** (kolom NOT NULL legacy; unik dalam berkas + DB), harga jual wajib > 0 (angka), harga beli ≥ 0, stok & stok minimum bilangan bulat ≥ 0, barcode (nullable; unik dalam berkas + DB;
+  - pengecekan unik SKU/barcode TANPA auto-scope tenant karena constraint legacy unik global — sesuai kenyataan skema;
+  - kategori find-or-create per tenant (case-insensitive); `category_id` NOT NULL → baris tanpa kategori otomatis diberi kategori `Tanpa Kategori`; `buy_price` kosong → 0.00 (default kolom), `is_active` default aktif (`1/true/ya/aktif`), slug dihasilkan dari nama dengan akhiran unik.
+
+### Test
+- `ProductCsvParserTest` (9): header Inggris + kanonik, alias Indonesia + delimiter `;`, sel berkutip berisi koma, baris kosong/komentar dilewati (nomor baris akurat), jumlah kolom salah dilaporkan + dikecualikan, header wajib hilang, berkas kosong, header tidak dikenal/duplikat, template.
+- `ImportProductsTest` (12): preview tanpa menulis; preview mendeteksi SKU duplikat dari DB; commit membuat produk lengkap (sku/barcode/slug/price/buy_price/stock/min_stock/is_active/tenant/uuid/version); baris invalid dilewati + laporan per kolom; duplikat dalam berkas (SKU & barcode); barcode duplikat terhadap DB; kategori dibuat sekali & dipakai ulang case-insensitive; default field opsional (+`Tanpa Kategori`, buy_price 0, tidak aktif); SKU wajib; varian harga invalid; harga beli negatif; pipeline penuh parse→commit.
+
+## Catatan
+- Stok hasil impor ditulis langsung ke kolom `stock` sebagai stok awal (konsisten dengan CRUD produk yang ada; integrasi buku besar stok untuk pembukaan stok menyusul).
+- Satuan dasar produk tidak diimpor pada irisan ini (FR-02 "Satuan" menyusul bersama irisan satuan).
+- `categories.name` unik global (warisan) → fallback memakai kategori yang sudah ada bila bentrok lintas-tenant (transisi; unik-per-tenant menyusul di migration depan).
+- Tidak ada regresi: suite penuh **122 passed / 0 failed / 6 skipped**; Pint bersih (5 files).
+
+---
+
 # Rebuild POS Universal — Fase 3: Alert lokal + stok minimum (FR-10) (belum dirilis)
 
 **Tanggal:** 10 Oktober 2026

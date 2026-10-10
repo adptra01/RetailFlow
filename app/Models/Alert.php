@@ -23,6 +23,8 @@ class Alert extends Model
 
     public const TYPE_RECEIVABLE_DUE = 'receivable.due';
 
+    public const TYPE_BACKUP_OVERDUE = 'backup.overdue';
+
     public const SEVERITY_INFO = 'info';
 
     public const SEVERITY_WARNING = 'warning';

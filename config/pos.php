@@ -43,4 +43,21 @@ return [
         'max_retries' => (int) env('POS_SYNC_MAX_RETRIES', 5),
     ],
 
+    // Versi rilis & skema database (plan §21: "Setiap rilis memiliki versi
+    // skema database"). Bukan nomor migration; penanda skema yang divalidasi
+    // saat restore backup (FR-11).
+    'version' => env('POS_APP_VERSION', '0.4.0'),
+    'schema_version' => env('POS_SCHEMA_VERSION', '0.4.0'),
+
+    'backup' => [
+        // Direktori tempat manifest + snapshot default disimpan. Bisa diarahkan
+        // ke media eksternal (FR-11: "Backup dapat disimpan ke media eksternal").
+        'path' => env('POS_BACKUP_PATH', storage_path('app/backups')),
+        // Enkripsi backup (AES-256-CBC via APP_KEY) — FR-11: opsi konfigurasi
+        // untuk data sensitif.
+        'encrypt' => (bool) env('POS_BACKUP_ENCRYPT', false),
+        // Ambang alert "backup terlalu lama" (FR-10: BackupOverdue).
+        'max_age_days' => (int) env('POS_BACKUP_MAX_AGE_DAYS', 7),
+    ],
+
 ];

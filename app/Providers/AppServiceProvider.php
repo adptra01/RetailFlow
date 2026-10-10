@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Backup\BackupManager;
 use App\Models\Product;
 use App\Observers\StockObserver;
 use App\Support\Tenancy\TenantContext;
@@ -20,6 +21,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(TenantContext::class);
+        $this->app->singleton(BackupManager::class, fn () => BackupManager::forDefault());
     }
 
     /**
