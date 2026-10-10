@@ -10,7 +10,11 @@ use App\Printing\NullReceiptPrinter;
 use App\Printing\ReceiptPrinter;
 use App\Support\Devices\DeviceContext;
 use App\Support\Sync\DatabaseSyncChangeFeed;
+use App\Support\Sync\Handlers\SaleSyncHandler;
+use App\Support\Sync\HttpSyncTransport;
 use App\Support\Sync\SyncChangeFeed;
+use App\Support\Sync\SyncOperationApplier;
+use App\Support\Sync\SyncTransport;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -39,6 +43,16 @@ class AppServiceProvider extends ServiceProvider
         // "Cursor sinkronisasi"). `NullSyncChangeFeed` tersedia sebagai
         // adaptor kosong untuk pengujian/fallback.
         $this->app->bind(SyncChangeFeed::class, DatabaseSyncChangeFeed::class);
+
+        // Transport push ke server (item Sprint 4.5 "Retry dengan backoff").
+        $this->app->bind(SyncTransport::class, HttpSyncTransport::class);
+
+        // Registri handler penerapan operasi push ke domain (item Sprint 4.6
+        // "Idempotensi server"). Tambahkan handler baru seiring bertambahnya
+        // tipe entitas yang disinkronkan.
+        $this->app->singleton(SyncOperationApplier::class, fn () => new SyncOperationApplier([
+            new SaleSyncHandler,
+        ]));
     }
 
     /**

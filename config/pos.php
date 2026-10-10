@@ -44,6 +44,15 @@ return [
         // Batas jumlah operasi dalam satu batch push (§11.5 "batch dengan
         // ukuran terbatas").
         'max_batch' => (int) env('POS_SYNC_MAX_BATCH', 500),
+        // URL server tujuan push. Default: instalasi ini sendiri (mode
+        // web/PWA on-prem) atau dikonfigurasi ke server cloud (mode native).
+        'server_url' => env('POS_SYNC_SERVER_URL', env('APP_URL', 'http://localhost')),
+        // Timeout request push (detik) sebelum hasil dianggap tidak diketahui
+        // dan operasi diulang (§11.3).
+        'request_timeout' => (int) env('POS_SYNC_REQUEST_TIMEOUT', 10),
+        // Entri `in_flight` yang lebih tua dari ini dianggap terbengkalai
+        // (crash saat mengirim) dan dikembalikan ke `pending` (§13).
+        'in_flight_timeout' => (int) env('POS_SYNC_IN_FLIGHT_TIMEOUT', 300),
     ],
 
     // Versi rilis & skema database (plan §21: "Setiap rilis memiliki versi

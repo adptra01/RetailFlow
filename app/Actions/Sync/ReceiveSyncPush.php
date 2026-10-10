@@ -4,6 +4,7 @@ namespace App\Actions\Sync;
 
 use App\Enums\SyncInboxStatus;
 use App\Models\SyncInbox;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -50,18 +51,39 @@ final class ReceiveSyncPush
                     continue;
                 }
 
-                $entry = SyncInbox::create([
-                    'operation_id' => $operation['operation_id'],
-                    'tenant_id' => $this->tenantId,
-                    'device_id' => $this->deviceId,
-                    'entity_type' => $operation['entity_type'],
-                    'entity_id' => $operation['entity_id'],
-                    'operation_type' => $operation['operation_type'],
-                    'payload' => $operation['payload'] ?? [],
-                    'local_sequence' => $operation['local_sequence'],
-                    'status' => SyncInboxStatus::Received,
-                    'received_at' => now(),
-                ]);
+                try {
+                    $entry = SyncInbox::create([
+                        'operation_id' => $operation['operation_id'],
+                        'tenant_id' => $this->tenantId,
+                        'device_id' => $this->deviceId,
+                        'entity_type' => $operation['entity_type'],
+                        'entity_id' => $operation['entity_id'],
+                        'operation_type' => $operation['operation_type'],
+                        'payload' => $operation['payload'] ?? [],
+                        'local_sequence' => $operation['local_sequence'],
+                        'status' => SyncInboxStatus::Received,
+                        'received_at' => now(),
+                    ]);
+                } catch (QueryException $e) {
+                    // Balapan pengiriman ulang: baris sudah dibuat proses lain
+                    // (operation_id unik) → perlakukan sebagai duplikat (§11.1).
+                    $existing = SyncInbox::query()
+                        ->where('operation_id', $operation['operation_id'])
+                        ->first();
+
+                    if ($existing === null) {
+                        throw $e;
+                    }
+
+                    $duplicates++;
+                    $results[] = [
+                        'operation_id' => $operation['operation_id'],
+                        'status' => 'duplicate',
+                        'server_sequence' => $existing->serverSequence(),
+                    ];
+
+                    continue;
+                }
 
                 $accepted++;
                 $results[] = [

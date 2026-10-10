@@ -21,7 +21,7 @@ class SyncInbox extends Model
     protected $fillable = [
         'operation_id', 'tenant_id', 'device_id', 'entity_type', 'entity_id',
         'operation_type', 'payload', 'local_sequence', 'status', 'error',
-        'received_at',
+        'received_at', 'applied_at', 'applied_entity_id',
     ];
 
     protected function casts(): array
@@ -31,6 +31,7 @@ class SyncInbox extends Model
             'status' => SyncInboxStatus::class,
             'local_sequence' => 'integer',
             'received_at' => 'datetime',
+            'applied_at' => 'datetime',
         ];
     }
 
@@ -62,5 +63,39 @@ class SyncInbox extends Model
     public function serverSequence(): int
     {
         return (int) $this->getKey();
+    }
+
+    public function isReceived(): bool
+    {
+        return $this->status === SyncInboxStatus::Received;
+    }
+
+    public function markApplied(?string $entityId = null): self
+    {
+        $this->status = SyncInboxStatus::Applied;
+        $this->applied_at = now();
+        $this->applied_entity_id = $entityId;
+        $this->error = null;
+        $this->save();
+
+        return $this;
+    }
+
+    public function markRejected(string $error): self
+    {
+        $this->status = SyncInboxStatus::Rejected;
+        $this->error = $error;
+        $this->save();
+
+        return $this;
+    }
+
+    public function markConflict(string $error): self
+    {
+        $this->status = SyncInboxStatus::Conflict;
+        $this->error = $error;
+        $this->save();
+
+        return $this;
     }
 }

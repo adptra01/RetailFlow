@@ -1,3 +1,87 @@
+# Rebuild POS Universal — Fase 4: Idempotensi server (Sprint 4, item 6) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 6 "Idempotensi server", §11.1 "aman terhadap pengiriman ulang" + "Operasi yang dapat diulang harus idempoten", §11.3 langkah 4–7, §11.4 konflik stok, §11.5 penolakan/konflik, §12 identitas dari server).
+
+## Perubahan
+
+### Penerapan domain
+- **`App\Support\Sync\SyncOperationHandler`** (kontrak) — menerjemahkan satu operasi inbox menjadi tindakan domain; implementasi **wajib idempoten**.
+- **`App\Support\Sync\Handlers\SaleSyncHandler`** — `sale` + `create` → `CreateSale`, memakai **`operation_id` sebagai `client_request_id`** sehingga penerapan ulang mengembalikan penjualan yang sama. `tenant_id`/`device_id` selalu diambil dari baris inbox (identitas server), bukan payload (§12). Stok kurang → `conflict` (§11.4); pelanggaran aturan lain → `rejected` (§11.5).
+- **`App\Support\Sync\SyncOperationApplier`** — registri handler; operasi tanpa handler dibiarkan `received` (durable, menunggu) alih-alih ditolak (data tidak dibuang).
+- **`App\Support\Sync\SyncApplicationResult`** — hasil: `applied` / `rejected` / `conflict` / `deferred`.
+- **`App\Actions\Sync\ApplySyncOperations`** — menerapkan baris `received` (opsional dibatasi `operation_ids`), **satu transaksi per operasi** dengan `lockForUpdate` dan pemeriksaan status ulang, sehingga penerapan ganda/paralel tidak menggandakan efek domain. Mengembalikan status akhir per `operation_id`.
+
+### Skema & model
+- **Migration `2026_10_10_000019_add_application_columns_to_sync_inbox_table.php`** — `applied_at`, `applied_entity_id` (aditif; indeks `(tenant_id,status)` sudah ada dari item 3).
+- **`SyncInbox`** — `isReceived()`, `markApplied()`, `markRejected()`, `markConflict()`.
+
+### Alur push
+- **`SyncPushController`** — setelah penerimaan, menerapkan operasi lalu mengembalikan status **akhir** per operasi: `applied`/`rejected`/`conflict`/`received`, plus `duplicate` (boolean), `entity_id`, `error`.
+- **`ReceiveSyncPush`** — pemasukan **aman-balapan**: `operation_id` unik; bila insert kalah balapan (pengiriman ulang paralel) → diperlakukan sebagai duplikat, bukan error.
+- **`PushOutbox`** — status `applied` juga dihitung `synced` (§11.5).
+- **`AppServiceProvider`** — binding singleton `SyncOperationApplier` dengan daftar handler default.
+
+## Test (`tests/Feature/Sync/ServerIdempotencyTest.php`, 8)
+- Penjualan push **diterapkan** ke domain (transaksi + stok turun + inbox `applied` + `applied_entity_id`).
+- **Pengiriman ulang tidak menggandakan** penjualan maupun mutasi stok (1 transaksi, 1 mutasi, stok tetap).
+- Penerapan kedua (`ApplySyncOperations`) tetap idempoten.
+- **Stok kurang → konflik** tanpa efek samping (tidak ada transaksi, stok utuh).
+- Penjualan tidak valid → **rejected** (mis. tanpa `user_id`).
+- Operasi tanpa handler → **deferred** (`received`); batch mencampur applied + deferred.
+- Status terisolasi per perangkat.
+- `SyncApiTest` disesuaikan ke kontrak baru: `results.*.status` = status akhir, `results.*.duplicate` menandai pengiriman ulang (2 test diperbarui memakai entity netral `product`).
+
+## Catatan
+- Penerapan dijalankan **sinkron** dalam permintaan push sehingga perangkat menerima hasil definitif. `ApplySyncOperations` juga dapat dipanggil ulang (mis. job/command) untuk operasi yang masih `received` (deferred).
+- Batas antara `rejected` (butuh tindakan pengguna) dan `conflict` (kasus yang perlu diselesaikan) mengikuti §11.4/§11.5; pendalaman deteksi stok negatif/ketidaksesuaian adalah item Sprint 4.7 "Konflik stok".
+
+## Status suite
+- **328 passed / 0 failed / 6 skipped** (1067 assertions). Pint bersih.
+
+---
+
+# Rebuild POS Universal — Fase 4: Retry dengan backoff (Sprint 4, item 5) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 5 "Retry dengan backoff", §11.1 "Operasi yang dapat diulang harus idempoten", §11.3 "Pengiriman ulang setelah timeout harus aman…", §11.5 "Sinkronisasi tertunda atau gagal" + batch terbatas, §13 tahan crash, §18 push).
+
+## Perubahan
+
+### Backoff
+- **`App\Support\Sync\Backoff`** — jadwal jeda dari `config('pos.sync.retry_backoff')` `[1,5,10]`; percobaan pertama (`retry_count = 0`) tanpa jeda; nilai terakhir menjadi batas atas; jadwal kosong = tanpa jeda.
+
+### Transport push
+- **`App\Support\Sync\SyncTransport`** (interface) + **`HttpSyncTransport`** — `POST {server}/api/v1/sync/push` dengan `Authorization: Bearer` (§18). Koneksi/timeout/5xx → **`App\Exceptions\Sync\SyncTransportException`** (hasil **tidak diketahui**, bukan kegagalan permanen).
+- Binding `SyncTransport` → `HttpSyncTransport` di `AppServiceProvider`. Seam transport memisahkan protokol dari loop retry sehingga dapat diuji tanpa jaringan.
+
+### Antrean & model
+- **`SyncOutbox`**: `markRetryPending($error)` (kembali `pending`, `retry_count++` — dipakai saat hasil tidak diketahui), `nextAttemptAt()` (waktu dasar `updated_at` + jeda backoff), `isReadyForAttempt()`.
+- **`Outbox`**: `readyForAttempt($deviceId, $limit, $now)` (retryable + backoff lewat) dan `resetStaleInFlight($deviceId, $timeout, $now)` (pulihkan `in_flight` terbengkalai akibat crash, §13).
+- Config baru: `pos.sync.server_url`, `pos.sync.request_timeout` (10), `pos.sync.in_flight_timeout` (300).
+
+### Loop pengiriman
+- **`App\Actions\Sync\PushOutbox`** — satu putaran: pulihkan `in_flight` basi → pilih entri siap (batas batch) → tandai `in_flight` → kirim satu batch → terapkan hasil per operasi.
+  - `received`/`synced`/`duplicate` → `synced`.
+  - `rejected`/`invalid` → `failed` (+pesan).
+  - `conflict` → `conflict`.
+  - status tak dikenal / hasil tak lengkap / transport gagal → **`pending` + `retry_count++`** (diulang dengan backoff), data lokal dipertahankan.
+- **`App\Support\Sync\SyncPushSummary`** — ringkasan `sent/synced/failed/conflicted/retrying` untuk status UI (item 8).
+
+## Test
+- **`tests/Feature/Sync/RetryBackoffTest.php`** (14) + **`tests/Feature/Sync/FakeSyncTransport.php`**: push sukses; duplikat = synced; kegagalan transport tetap retryable + data utuh; backoff menunda percobaan berikutnya; retry habis tidak diulang; **pengiriman ulang setelah timeout aman** (gagal → sukses, tanpa duplikasi); penolakan server → `failed`; konflik → `conflict`; status tak dikenal → retry; batas batch; **`in_flight` basi dipulihkan** & `in_flight` baru dibiarkan; `HttpSyncTransport` mengirim ke endpoint dengan bearer + menaikkan exception pada 5xx.
+- **`tests/Unit/BackoffTest.php`** (4): tanpa jeda, mengikuti jadwal, batas atas, jadwal kosong.
+
+## Catatan
+- Status `pending` dipakai untuk hasil tak diketahui (bukan `failed`) sesuai §11.3. Bila `retry_count` mencapai `max_retries`, entri berhenti diulang namun tetap tersimpan dan terhitung pada `pendingCount` (data lokal tidak dihapus).
+- `failed` = penolakan domain server (butuh tindakan pengguna); pemisahan lebih lanjut antara penolakan permanen vs. konflik akan disempurnakan pada item "Deteksi konflik".
+- Backoff memakai `updated_at` sebagai penanda waktu percobaan terakhir (satu-satunya mutasi baris outbox adalah transisi status) sehingga tidak perlu kolom baru.
+
+## Status suite
+- **320 passed / 0 failed / 6 skipped** (1023 assertions). Pint bersih.
+
+---
+
 # Rebuild POS Universal — Fase 4: Cursor sinkronisasi (Sprint 4, item 4) (belum dirilis)
 
 **Tanggal:** 11 Oktober 2026

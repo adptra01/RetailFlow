@@ -51,7 +51,7 @@ final class PushOutbox
             'operation_id' => $entry->operation_id,
             'entity_type' => $entry->entity_type,
             'entity_id' => $entry->entity_id,
-            'operation_type' => $entry->operation_type->value,
+            'operation_type' => (string) $entry->operation_type,
             'payload' => $entry->payload,
             'local_sequence' => $entry->local_sequence,
         ])->all();
@@ -98,7 +98,7 @@ final class PushOutbox
 
             $status = (string) ($result['status'] ?? '');
 
-            if (in_array($status, ['received', 'synced', 'duplicate'], true)) {
+            if (in_array($status, ['received', 'synced', 'duplicate', 'applied'], true)) {
                 $entry->markSynced();
                 $synced++;
 

@@ -86,7 +86,8 @@ class SyncApiTest extends TestCase
     {
         $tenant = Tenant::factory()->create();
         [$device, $token] = $this->device($tenant);
-        $op = $this->operation(['local_sequence' => 7]);
+        // Entity tanpa handler penerapan: fokus pada kontrak penerimaan.
+        $op = $this->operation(['entity_type' => 'product', 'local_sequence' => 7]);
 
         $response = $this->postJson('/api/v1/sync/push', ['operations' => [$op]], $this->bearer($token));
 
@@ -103,7 +104,7 @@ class SyncApiTest extends TestCase
         $entry = SyncInbox::query()->where('operation_id', $op['operation_id'])->firstOrFail();
         $this->assertSame($tenant->id, $entry->tenant_id);
         $this->assertSame($device->id, $entry->device_id);
-        $this->assertSame('sale', $entry->entity_type);
+        $this->assertSame('product', $entry->entity_type);
         $this->assertSame('create', $entry->operation_type);
         $this->assertSame(7, $entry->local_sequence);
         $this->assertSame(SyncInboxStatus::Received, $entry->status);
@@ -130,7 +131,7 @@ class SyncApiTest extends TestCase
     {
         $tenant = Tenant::factory()->create();
         [, $token] = $this->device($tenant);
-        $op = $this->operation();
+        $op = $this->operation(['entity_type' => 'product']);
 
         $this->postJson('/api/v1/sync/push', ['operations' => [$op]], $this->bearer($token))
             ->assertOk()
@@ -139,7 +140,8 @@ class SyncApiTest extends TestCase
         $this->postJson('/api/v1/sync/push', ['operations' => [$op]], $this->bearer($token))
             ->assertOk()
             ->assertJson(['accepted' => 0, 'duplicates' => 1])
-            ->assertJsonPath('results.0.status', 'duplicate');
+            ->assertJsonPath('results.0.duplicate', true)
+            ->assertJsonPath('results.0.status', 'received');
 
         $this->assertSame(1, SyncInbox::query()->count());
     }

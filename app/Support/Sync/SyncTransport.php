@@ -2,6 +2,8 @@
 
 namespace App\Support\Sync;
 
+use App\Exceptions\Sync\SyncTransportException;
+
 /**
  * Transport pengiriman batch push ke server (§18).
  *
@@ -16,7 +18,7 @@ interface SyncTransport
      * @param  list<array<string, mixed>>  $operations
      * @return list<array{operation_id: string, status: string, server_sequence?: int|null, error?: string|null}>
      *
-     * @throws \App\Exceptions\Sync\SyncTransportException bila hasil tidak diketahui (timeout/koneksi/5xx)
+     * @throws SyncTransportException bila hasil tidak diketahui (timeout/koneksi/5xx)
      */
     public function push(string $token, array $operations): array;
 }
