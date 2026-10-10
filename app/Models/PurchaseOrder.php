@@ -26,7 +26,7 @@ class PurchaseOrder extends Model
     {
         static::creating(function (PurchaseOrder $po) {
             if (empty($po->order_number)) {
-                $po->order_number = 'PO-' . now()->format('YmdHis') . '-' . strtoupper(Str::random(6));
+                $po->order_number = 'PO-'.now()->format('YmdHis').'-'.strtoupper(Str::random(6));
             }
         });
     }

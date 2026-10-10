@@ -14,7 +14,7 @@ class GoodsReceipt extends Model
     {
         static::creating(function (GoodsReceipt $gr) {
             if (empty($gr->receipt_number)) {
-                $gr->receipt_number = 'GR-' . now()->format('YmdHis') . '-' . strtoupper(Str::random(6));
+                $gr->receipt_number = 'GR-'.now()->format('YmdHis').'-'.strtoupper(Str::random(6));
             }
         });
     }

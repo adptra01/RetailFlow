@@ -18,7 +18,7 @@ class PurchaseReturn extends Model
     {
         static::creating(function (PurchaseReturn $return) {
             if (empty($return->return_number)) {
-                $return->return_number = 'RTP-' . now()->format('YmdHis') . '-' . strtoupper(Str::random(6));
+                $return->return_number = 'RTP-'.now()->format('YmdHis').'-'.strtoupper(Str::random(6));
             }
         });
     }

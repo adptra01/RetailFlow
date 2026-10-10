@@ -18,7 +18,7 @@ class SalesReturn extends Model
     {
         static::creating(function (SalesReturn $return) {
             if (empty($return->return_number)) {
-                $return->return_number = 'RTS-' . now()->format('YmdHis') . '-' . strtoupper(Str::random(6));
+                $return->return_number = 'RTS-'.now()->format('YmdHis').'-'.strtoupper(Str::random(6));
             }
         });
     }
