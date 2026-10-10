@@ -1,3 +1,40 @@
+# Rebuild POS Universal — Fase 4: Outbox sinkronisasi (Sprint 4, item 2) (belum dirilis)
+
+**Tanggal:** 11 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 2 \"Outbox\", §11.1 prinsip offline, §11.2 struktur outbox, §11.3 proses, §11.5 perangkat lama offline, §13 event/transactional outbox, §17 tabel `sync_outbox`).
+
+## Perubahan
+
+### Skema & model
+- **Migration `2026_10_10_000016_create_sync_outbox_table.php`** — `sync_outbox` dengan `operation_id` (uuid PK), `tenant_id`, `device_id`, `entity_type`, `entity_id`, `operation_type`, `payload` (json), `local_sequence`, `sync_status`, `retry_count`, `last_error`, timestamps. Unik `(device_id, local_sequence)`; indeks `(tenant_id, sync_status)` & `(device_id, sync_status)`.
+- **`App\Enums\SyncStatus`** — `pending`, `in_flight`, `synced`, `conflict`, `failed` (+label, `isTerminal`, `retryableValues`).
+- **`App\Enums\SyncOperationType`** — `create`, `update`, `delete`.
+- **`App\Models\SyncOutbox`** — PK `operation_id` (HasUuids); casts enum/array; relasi `tenant`/`device`; scope `forDevice`/`pending`/`retryable`; transisi `markInFlight`/`markSynced`/`markConflict`/`markFailed` (menambah `retry_count`) + `isRetryable`.
+
+### Layanan (`app/Support/Sync/Outbox.php`)
+- `enqueue(deviceId, entityType, entityId, operationType, payload, operationId?)` — menulis baris `pending`; **dirancang dipanggil di dalam transaksi domain** (transactional outbox, §13) sehingga rollback domain membatalkan entri outbox.
+- `nextSequence(deviceId)` — urutan lokal per perangkat (mulai 1), atomik + dilindungi unique index.
+- `pending()` / `retryable()` — batch urut `local_sequence`, ukuran dari `pos.offline.batch_size`.
+- `pendingCount()` / `unsyncedCount()` — jumlah operasi tertunda (§11.5).
+- Resolusi tenant: eksplisit → `TenantContext`; melempar bila tak diketahui.
+
+## Test (`tests/Feature/Sync/OutboxTest.php`, 12 test)
+- Enqueue menyimpan `pending` + sequence; sequence independen per perangkat.
+- **Transactionality**: entri hilang bila transaksi domain rollback; bertahan bila commit.
+- Urutan `pending`, batas batch, transisi status, `pendingCount` turun setelah `synced`.
+- `markFailed` menaikkan `retry_count` + `last_error`; `retryable` berhenti saat `pos.sync.max_retries` tercapai.
+- `markConflict`, payload round-trip, `operation_id` unik, resolusi tenant & galat tanpa tenant.
+
+## Perbaikan test (flaky)
+- `tests/Feature/Reports/SalesReportTest::test_riwayat_lists_transactions_newest_first` — **flaky saat test berjalan lewat tengah malam**: transaksi dibuat `now()->subHours(2)` sementara `SalesReport::range()` memfilter hari ini 00:00–23:59, sehingga keduanya jatuh ke hari sebelumnya. Waktu dikunci ke tengah hari dengan `travelTo()`. Bukan perubahan perilaku aplikasi.
+
+## Catatan
+
+- Outbox belum dikonsumsi oleh alur domain (integrasi enqueue pada use case + API push/pull menyusul pada item Sprint 4 berikutnya).
+- Cursor sinkronisasi, retry/backoff pengiriman, dan idempotensi server belum dibangun.
+
+---
+
 # Rebuild POS Universal — Fase 4: Identitas perangkat (Sprint 4, item 1) (belum dirilis)
 
 **Tanggal:** 10 Oktober 2026

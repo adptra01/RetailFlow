@@ -191,6 +191,10 @@ class SalesReportTest extends TestCase
 
     public function test_riwayat_lists_transactions_newest_first(): void
     {
+        // Kunci waktu di tengah hari agar tidak flaky ketika test berjalan
+        // tepat setelah tengah malam (subHours bisa melewati batas hari).
+        $this->travelTo(now()->startOfDay()->addHours(12));
+
         $old = $this->txn(['created_at' => now()->subHours(2)]);
         $new = $this->txn(['created_at' => now()->subHour()]);
 
