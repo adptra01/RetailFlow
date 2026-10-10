@@ -41,6 +41,9 @@ return [
     'sync' => [
         'retry_backoff' => [1, 5, 10],
         'max_retries' => (int) env('POS_SYNC_MAX_RETRIES', 5),
+        // Batas jumlah operasi dalam satu batch push (§11.5 "batch dengan
+        // ukuran terbatas").
+        'max_batch' => (int) env('POS_SYNC_MAX_BATCH', 500),
     ],
 
     // Versi rilis & skema database (plan §21: "Setiap rilis memiliki versi
