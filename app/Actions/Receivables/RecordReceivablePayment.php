@@ -4,6 +4,7 @@ namespace App\Actions\Receivables;
 
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\ReceivableClosed;
+use App\Enums\AuditAction;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Receivable;
@@ -129,7 +130,7 @@ class RecordReceivablePayment
             'tenant_id' => $tenantId,
             'actor_id' => $data['user_id'] ?? null,
             'device_id' => $data['device_id'] ?? null,
-            'action' => 'receivable.payment',
+            'action' => AuditAction::ReceivablePayment->value,
             'entity_type' => 'receivable_payment',
             'entity_id' => $payment->uuid,
             'metadata' => [

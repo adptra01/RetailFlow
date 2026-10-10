@@ -1,3 +1,42 @@
+# Rebuild POS Universal — Fase 3: Peran pengguna (FR-12) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, Sprint 3 "Peran pengguna", FR-12 §405–428, model data `roles`/`permissions` §14, "Otorisasi pada setiap use case" §10.2, skenario test §22)
+
+## Perubahan
+
+### Katalog peran & izin (FR-12) — sumber tunggal kebenaran
+- **`app/Enums/Permission.php`** — enum 9 izin FR-12 (nilai = nama izin spatie, label bahasa Indonesia): `access.module`, `price.update`, `discount.apply`, `transaction.void`, `stock.adjust`, `report.financial.view`, `user.manage`, `payment_gateway.configure`, `backup.restore`.
+- **`app/Enums/Role.php`** — enum 6 peran awal FR-12 (label Indonesia) + **matriks izin default** lewat `permissions()`:
+  - `owner` → semua izin; `admin` → semua kecuali `backup.restore`; `supervisor` → modul, diskon, void, stok, laporan; `cashier` → modul, diskon, void; `inventory_manager` → modul, stok; `viewer` → modul, laporan.
+  - Otorisasi selalu lewat **izin**, bukan nama peran (peran hanya kumpulan izin awal).
+- **`database/seeders/DefaultRolesSeeder.php`** — seed **idempoten** (`findOrCreate` + `syncPermissions` dari matriks; `forgetCachedPermissions` di awal & akhir); additive terhadap peran legacy (`pemilik` dkk. tidak disentuh). Dipanggil dari `DatabaseSeeder` + command **`pos:roles:seed`**.
+
+### Gerbang otorisasi operasi sensitif (`app/Support/Auth/`)
+- **`ActionAuthorizer`** — `assert(User, Permission|string)`: aktor **nonaktif ditolak** untuk semua operasi sensitif; izin diperiksa via Gate `can()`; exception `ActionForbidden` (403, pesan berisi label + id izin). `assertIf(?User, ...)` untuk use case yang boleh berjalan tanpa aktor (CLI) namun tetap memeriksa izin bila aktor diberikan.
+- **`AppServiceProvider`** — `Gate::before` menghubungkan katalog spatie permission ke `can()` app-wide; hanya **memberi** akses bila izin dimiliki, selain itu `null` (eval policy normal); `PermissionDoesNotExist` ditangkap agar izin legacy yang belum di-seed tidak melempar di view Blade.
+
+### Use case pengelolaan pengguna (`app/Actions/Users/ManageUser.php`)
+- `create(actor, input, ?Role)` — validasi (nama/email unik global/password aturan Fortify), `tenant_id` eksplisit, `is_active=true`, UUIDv7 sync identity (model `User` kini memakai `HasSyncIdentity`), role opsional; `updateProfile`, `setActive`, `assignRole` (sync, hapus role dengan `null`).
+- **Aturan keamanan owner terakhir**: `LastOwnerProtected` (422) — owner aktif terakhir tidak dapat dinonaktifkan atau diturunkan perannya (mencegah toko kehilangan akses admin).
+- Pencarian pengguna deterministik per-tenant (`withoutGlobalScope('tenant')` + `WHERE tenant_id`) → `UserNotFound` (404) bila di luar tenant.
+- `UserFactory` kini mendefinisikan `is_active => true` (mencerminkan default skema; sebelumnya atribut in-memory `null`).
+
+### Enforce FR-12 di titik sensitif yang sudah ada
+- `BackupManager::restore(..., ?User $actor = null)` → izin `backup.restore` diperiksa **sebelum** validasi file bila aktor diberikan (CLI operator tetap tanpa aktor).
+- `SalesReport(..., ?User $actor = null)` → izin `report.financial.view` di `daily()` (kompatibel ke belakang: tanpa aktor tetap jalan).
+
+### Exception
+- `app/Exceptions/Auth/ActionForbidden.php` (403), `app/Exceptions/Users/UserNotFound.php` (404), `app/Exceptions/Users/LastOwnerProtected.php` (422) — pola render JSON `['message']` konsisten dengan exception lain.
+
+## Catatan
+
+- **UI/API pengelolaan pengguna belum di-wire** (pola irisan Fase 3: domain + test dulu; UI menyusul).
+- Aturan last-owner membutuhkan owner lain DULU: nonaktifkan/demote owner kedua dulu baru yang terakhir (dua-owner aman).
+- Izin yang belum dikenal pada `ActionAuthorizer` diabaikan (tidak memblokir diam-diam); security tetap dipegang Gate bilamana izin itu nanti terdaftar.
+
+---
+
 # Rebuild POS Universal — Fase 3: Backup & pemulihan (FR-11) (belum dirilis)
 
 **Tanggal:** 10 Oktober 2026

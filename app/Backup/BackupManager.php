@@ -2,12 +2,15 @@
 
 namespace App\Backup;
 
+use App\Enums\Permission;
 use App\Exceptions\Backup\BackupCorrupted;
 use App\Exceptions\Backup\BackupException;
 use App\Exceptions\Backup\BackupFailed;
 use App\Exceptions\Backup\BackupNotFound;
 use App\Exceptions\Backup\BackupRequiresConfirmation;
 use App\Exceptions\Backup\BackupSchemaMismatch;
+use App\Models\User;
+use App\Support\Auth\ActionAuthorizer;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
@@ -108,14 +111,20 @@ final class BackupManager
     /**
      * Pulihkan backup ke database (FR-11 + plan §21).
      *
+     * Bila aktor diberikan, otorisasi FR-12 diperiksa: hanya yang memiliki
+     * izin `backup.restore` yang boleh restore. Tanpa aktor (CLI operator),
+     * lapisan pemanggil yang bertanggung jawab atas otorisasi.
+     *
      * Alur: cek file → validasi integritas (checksum) → validasi versi skema →
      * konfirmasi eksplisit → snapshot keselamatan otomatis → restore →
      * pemeriksaan kesehatan pasca-restore.
      *
      * @return BackupInfo snapshot keselamatan pra-restore (dibuat otomatis)
      */
-    public function restore(string $backupFile, bool $force = false): BackupInfo
+    public function restore(string $backupFile, bool $force = false, ?User $actor = null): BackupInfo
     {
+        ActionAuthorizer::assertIf($actor, Permission::RestoreBackup);
+
         $path = str_starts_with($backupFile, '/')
             ? $backupFile
             : rtrim($this->backupDir, '/').'/'.$backupFile;

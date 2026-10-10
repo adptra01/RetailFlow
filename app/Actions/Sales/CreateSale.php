@@ -4,6 +4,7 @@ namespace App\Actions\Sales;
 
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
+use App\Enums\AuditAction;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Product;
@@ -210,7 +211,7 @@ class CreateSale
             'tenant_id' => $tenantId,
             'actor_id' => $data['user_id'],
             'device_id' => $data['device_id'] ?? null,
-            'action' => 'sale.created',
+            'action' => AuditAction::SaleCreated->value,
             'entity_type' => 'sale',
             'entity_id' => $transaction->uuid,
             'metadata' => [

@@ -2,9 +2,12 @@
 
 namespace App\Reports;
 
+use App\Enums\Permission;
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
+use App\Models\User;
+use App\Support\Auth\ActionAuthorizer;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
@@ -22,11 +25,15 @@ use Illuminate\Support\Facades\DB;
  *
  * Tenant: deterministik bila `tenantId` eksplisit (CLI/test); tanpa itu
  * mengikuti konteks request. Transaksi yang dihapus (SoftDeletes) tidak
- * dihitung.
+ * dihitung. Bila `$actor` diberikan, izin `report.financial.view`
+ * diperiksa (FR-12).
  */
 class SalesReport
 {
-    public function __construct(private readonly ?string $tenantId = null) {}
+    public function __construct(
+        private readonly ?string $tenantId = null,
+        private readonly ?User $actor = null,
+    ) {}
 
     /**
      * Laporan satu hari (default: hari ini).
@@ -35,6 +42,8 @@ class SalesReport
      */
     public function daily(?string $date = null): array
     {
+        ActionAuthorizer::assertIf($this->actor, Permission::ViewFinancialReports);
+
         $date ??= now()->toDateString();
 
         return $this->range($date, $date);

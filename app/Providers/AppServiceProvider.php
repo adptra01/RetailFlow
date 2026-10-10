@@ -4,14 +4,17 @@ namespace App\Providers;
 
 use App\Backup\BackupManager;
 use App\Models\Product;
+use App\Models\User;
 use App\Observers\StockObserver;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Spatie\Permission\Exceptions\PermissionDoesNotExist;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -32,6 +35,24 @@ class AppServiceProvider extends ServiceProvider
         $this->configureDefaults();
 
         Product::observe(StockObserver::class);
+
+        // FR-12: izin dari katalog spatie permission bisa dipakai lewat `can()`.
+        // Hanya MEMBERIKAN akses bila izin dimiliki; null = lanjut evaluasi
+        // policy/gate normal, sehingga tidak mengintervensi kebijakan lain.
+        // `hasPermissionTo()` melempar PermissionDoesNotExist untuk nama izin
+        // yang belum terdaftar (mis. izin legacy di view Blade pada DB yang
+        // belum di-seed) — ditangkap agar jatuh ke eval normal, bukan error.
+        Gate::before(function (?User $user, string $ability): ?bool {
+            if ($user === null) {
+                return null;
+            }
+
+            try {
+                return $user->hasPermissionTo($ability) ? true : null;
+            } catch (PermissionDoesNotExist) {
+                return null;
+            }
+        });
     }
 
     /**
