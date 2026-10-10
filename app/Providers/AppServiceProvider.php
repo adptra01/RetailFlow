@@ -6,6 +6,9 @@ use App\Backup\BackupManager;
 use App\Models\Product;
 use App\Models\User;
 use App\Observers\StockObserver;
+use App\Printing\NullReceiptPrinter;
+use App\Printing\ReceiptPrinter;
+use App\Support\Devices\DeviceContext;
 use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -24,7 +27,11 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(TenantContext::class);
+        $this->app->singleton(DeviceContext::class);
         $this->app->singleton(BackupManager::class, fn () => BackupManager::forDefault());
+
+        // Port printer: adaptor default no-op (printer opsional, §20).
+        $this->app->bind(ReceiptPrinter::class, NullReceiptPrinter::class);
     }
 
     /**

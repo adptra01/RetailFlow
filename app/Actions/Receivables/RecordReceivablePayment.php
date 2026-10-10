@@ -2,9 +2,9 @@
 
 namespace App\Actions\Receivables;
 
+use App\Enums\AuditAction;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\ReceivableClosed;
-use App\Enums\AuditAction;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Receivable;

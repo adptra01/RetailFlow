@@ -26,12 +26,12 @@ enum FeatureProfile: string
     {
         return match ($this) {
             self::Simple => ['cashier', 'products', 'history', 'reports'],
-            self::Retail => ['cashier', 'products', 'stock', 'purchases', 'reports'],
+            self::Retail => ['cashier', 'products', 'history', 'stock', 'purchases', 'suppliers', 'reports'],
             self::FoodBeverage => ['cashier', 'menu', 'orders', 'reports'],
             self::CreditSales => ['cashier', 'customers', 'receivables', 'reports'],
             self::Advanced => [
-                'cashier', 'products', 'history', 'stock', 'purchases', 'customers',
-                'receivables', 'promotions', 'reports', 'audit', 'sync',
+                'cashier', 'products', 'history', 'stock', 'purchases', 'suppliers', 'customers',
+                'receivables', 'promotions', 'reports', 'reports_advanced', 'menu', 'orders', 'audit', 'sync',
             ],
         };
     }

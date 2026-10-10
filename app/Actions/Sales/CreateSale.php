@@ -2,9 +2,9 @@
 
 namespace App\Actions\Sales;
 
+use App\Enums\AuditAction;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
-use App\Enums\AuditAction;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Product;

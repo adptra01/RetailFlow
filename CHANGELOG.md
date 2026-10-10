@@ -1,3 +1,159 @@
+# Rebuild POS Universal — Fase 4: Identitas perangkat (Sprint 4, item 1) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 4 item 1 \"Identitas perangkat\", NFR-03 \"Keamanan\", §11 \"Strategi sinkronisasi\", §15 \"Arsitektur keamanan\", §17 tabel `devices`).
+
+## Perubahan
+
+### Kredensial perangkat
+- **Migration `2026_10_10_000015_add_device_credentials_to_devices_table.php`** — menambah `token_hash` (string 64, nullable, unik) dan `token_prefix` (16) ke `devices`; additive, tidak merusak data lama.
+- **`app/Support/Devices/DeviceToken.php`** — generate token `rf_<48 char>`; hanya **hash SHA-256** yang disimpan (token berentropi tinggi; KDF lambat tidak diperlukan), `prefix` disimpan untuk ditampilkan.
+- **`app/Support/Devices/DeviceRegistration.php`** — VO hasil pendaftaran (`device`, `token` plaintext sekali).
+- **`app/Support/Devices/DeviceContext.php`** — holder request-scoped perangkat (mirror `TenantContext`), di-bind singleton.
+- **`Device`** model: `token_hash`/`token_prefix` fillable, `token_hash` di-`hidden`; `findByToken()` (hanya perangkat aktif, menolak yang dicabut), `markSeen()`.
+- **`app/Actions/Devices/RegisterDevice.php`** — daftarkan perangkat + terbitkan token; audit `device.registered`.
+- **`app/Actions/Devices/RevokeDevice.php`** — cabut akses (idempoten); audit `device.revoked`. Exception `DeviceNotFound` (404).
+- Otorisasi: izin administratif FR-12 `user.manage` bila aktor diberikan (`assertIf`); pendaftaran saat onboarding/CLI tanpa aktor diizinkan.
+
+### Audit
+- `AuditRecorder` kini mengisi `device_id` dari `DeviceContext` bila tidak diberikan eksplisit (menutup celah `device_id` selalu null).
+- `AuditAction` diperluas: `device.registered`, `device.revoked`.
+
+## Test (`tests/Feature/Devices/DeviceIdentityTest.php`, 10 test)
+- Token diterbitkan & hanya hash disimpan; plaintext tak pernah terserialisasi.
+- `findByToken` mengenali perangkat aktif; token salah → null; perangkat dicabut **ditolak** (dicabut idempoten).
+- Izin `user.manage` wajib saat aktor diberikan (kasir ditolak); pendaftaran onboarding tanpa aktor diizinkan.
+- Perangkat tenant lain / tidak dikenal → `DeviceNotFound`.
+- `AuditRecorder` memakai `DeviceContext`; `markSeen()` memperbarui `last_seen_at` + versi.
+
+## Catatan
+
+- Handshake HTTP/API perangkat (endpoint + middleware) menyusul pada item Sprint 4 berikutnya (outbox, API push/pull).
+- Pencabutan bersifat online: perangkat lama offline baru tertolak pada sinkronisasi berikutnya (§15).
+
+---
+
+# Rebuild POS Universal — Fase 3: Uji restart/recovery & dokumentasi dukungan (Sprint 3) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 3 item 9 \"Uji restart dan recovery\", item 10 \"Dokumentasikan prosedur dukungan\", §23 Observability & diagnostik, Fase 0 \"Aplikasi tetap dapat membuka data setelah restart\", §17.3 atomisitas).
+
+## Perubahan
+
+### Uji restart (`tests/Feature/Recovery/DatabaseRestartTest.php`)
+- Memakai SQLite **berbasis file** (bukan `:memory:`) sehingga `DB::purge()` + `DB::reconnect()` benar-benar menirukan proses berhenti lalu hidup kembali.
+- Data operasional (transaksi, item, stok, ledger, audit) bertahan setelah restart, dan **saldo stok == stok awal + Σ ledger** (rekonsiliasi).
+- Checkout yang sudah committed **aman diulang** setelah restart (`client_request_id` idempoten) — tidak ada transaksi/ledger ganda dan stok tidak berkurang dua kali.
+
+### Uji recovery (`tests/Feature/Recovery/RecoveryTest.php`)
+- Checkout gagal (stok tidak cukup) **tidak meninggalkan data parsial** (0 transaksi/item/ledger; stok utuh).
+- Percobaan ulang setelah gagal berhasil bersih (tepat 1 entri ledger).
+- Rekonsiliasi saldo stok dengan ledger setelah beberapa penjualan.
+
+### Dokumentasi dukungan (`docs/SUPPORT.md`, `README.md`)
+- Runbook §23: informasi diagnostik yang harus dikumpulkan, prosedur pemulihan (restart, checkout gagal, printer gagal, restore backup), peran/izin FR-12, alert FR-10, ekskalasi, dan privasi log.
+- `README.md` diperluas: tautan dokumentasi + daftar perintah operasional.
+
+## Catatan
+
+- **Sprint 3 selesai** (item 1–10): impor CSV, laporan harian, alert stok minimum, backup & restore, peran pengguna, audit tindakan sensitif, profil Simple/Retail, uji kegagalan printer, uji restart/recovery, dokumentasi dukungan.
+- Fase 4 (offline sync foundation) belum dimulai; item diagnostik \"sinkronisasi terakhir / operasi tertunda\" sengaja ditandai *belum dibangun*.
+
+---
+
+# Rebuild POS Universal — Fase 3: Seam printer & uji kegagalan (Sprint 3) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Sprint 3 \"Uji kegagalan printer\", §17.3 \"Commit … kegagalan printer tidak boleh membatalkan penjualan\", §20 \"Printer\", §22 \"Pengujian kegagalan wajib: Printer gagal setelah checkout berhasil\", §254 \"Penjualan yang tersimpan tidak boleh dibatalkan hanya karena printer gagal\").
+
+## Perubahan
+
+### Port pencetakan (`app/Printing/`)
+- **`ReceiptPrinter`** — port (interface) `print(Transaction): void`; implementasi konkret (ESC/POS/driver OS) menyusul di lapisan infrastruktur. Domain tidak bergantung pada driver printer (§634).
+- **`NullReceiptPrinter`** — adaptor default no-op; di-bind di `AppServiceProvider` (printer opsional: \"Printer tidak boleh menjadi syarat untuk menyimpan transaksi\").
+- **`PrintReceiptResult`** — VO readonly hasil pencetakan (`success`, `transaction`, `error`).
+- **`PrinterException`** — kegagalan pencetakan (operasional, bukan fatal).
+
+### Use case cetak (`app/Actions/Sales/PrintReceipt.php`)
+- Mencetak **setelah** transaksi committed; **tidak pernah** me-rollback penjualan.
+- Kegagalan `PrinterException` → `Log::warning` + audit `receipt.print_failed` (aktor, `entity_type=sale`, `entity_id=uuid`, `reason`) lalu mengembalikan `PrintReceiptResult::failed(...)` agar kasir dapat mencetak ulang / menyimpan struk.
+- Exception lain **tidak** ditelan (bug tetap terlihat).
+- `AuditAction::ReceiptPrintFailed` ditambahkan.
+
+## Test (`tests/Feature/Printing/PrintReceiptTest.php`, 5 test)
+- Adaptor default = `NullReceiptPrinter`, selalu sukses, tanpa audit kegagalan.
+- Cetak sukses memanggil printer, tanpa audit kegagalan.
+- Cetak gagal → hasil `failed` + audit aktor + transaksi tetap ada.
+- **Uji kegagalan wajib**: checkout committed → printer gagal → transaksi, item, dan stok **tidak** berubah/rollback.
+- Penjualan tersimpan tanpa pernah menyentuh printer.
+
+## Catatan
+
+- Ini menyediakan *seam* minimal agar uji kegagalan printer (Sprint 3) bermakna; driver thermal nyata (58/80 mm) masuk pada fase perangkat keras.
+- Belum ada alert lokal untuk kegagalan printer (kandidat FR-10 berikutnya).
+
+---
+
+# Rebuild POS Universal — Fase 3: Profil Simple/Retail (FR-13) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24 "Profil Simple/Retail", Sprint 3 "Profil Simple dan Retail", FR-13 §430–447, unit test §22 "Aturan profil fitur")
+
+## Perubahan
+
+### Katalog modul
+- **`app/Enums/Module.php`** — 15 modul dengan label Indonesia (`cashier`, `products`, `history`, `stock`, `purchases`, `suppliers`, `customers`, `receivables`, `promotions`, `reports`, `reports_advanced`, `menu`, `orders`, `audit`, `sync`).
+- **`FeatureProfile::modules()`** diselaraskan dengan FR-13: **Retail** kini menyembunyikan→menampilkan `history`, `suppliers` ("menampilkan stok, pemasok, dan pembelian"); **Advanced** melengkapi `reports_advanced`, `suppliers`, `menu`, `orders` (tetap superset Semua profil Simple). Simple tetap menyembunyikan `purchases` & `reports_advanced`.
+
+### Aturan resolusi (`app/Support/Features/FeatureProfileManager.php`)
+- Modul efektif tenant: **(1)** pakai `enabled_modules` eksplisit bila terisi (override per-tenant hasil toggle), **(2)** jika null/kosong → default `feature_profile`. Menyaring nilai tak dikenal, deduplikasi, mengembalikan `Module` bertipe.
+- `for(Tenant)` / `resolve(profile, enabledModules)` / `isEnabled` / `has` / `moduleNames`.
+- Resolusi murni **visibilitas** — bukan otorisasi (izin FR-12 tetap terpisah).
+
+### Aksi teraudit (`app/Actions/Tenants/ConfigureFeatureProfile.php`)
+- `applyProfile(actor, profile, reason)` — set `feature_profile` + setel ulang `enabled_modules` ke default profil.
+- `enableModule` / `disableModule` — toggle `enabled_modules` saja; **idempoten** (tanpa perubahan = tanpa jejak audit baru).
+- `configure(actor, businessType?, uiComplexity?, onboardingState?, reason?)` — ubah hanya field yang diberikan.
+- **Non-destruktif (FR-13)**: semua operasi hanya menyentuh kolom konfigurasi tenant; data operasional tidak pernah dihapus, dan mengaktifkan kembali modul memulihkan akses ke data yang sama.
+- Otorisasi: izin administratif FR-12 `user.manage` (tenant-scoped, aktor nonaktif ditolak); setiap perubahan dicatat audit (`feature_profile.changed`, `module.enabled`, `module.disabled`, `tenant.configured`) — FR-12.
+- Exception `TenantNotFound` (404). Audit enum `AuditAction` diperluas 4 aksi.
+
+## Catatan
+
+- **Keputusan**: konfigurasi profil fitur dipetakan ke izin `user.manage` karena FR-12 tidak menyediakan izin khusus settings; dapat dipersempit bila izin `settings.manage` ditambahkan kelak.
+- UI pemilih profil/onboarding belum di-wire (pola irisan Fase 3: domain + test dulu).
+- Modul mengatur visibilitas menu; penegakan otorisasi per-endpoint saat UI dibangun.
+
+---
+
+# Rebuild POS Universal — Fase 3: Audit tindakan sensitif (FR-12) (belum dirilis)
+
+**Tanggal:** 10 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (Fase 3 §24, Sprint 3 "Audit tindakan sensitif", FR-12 §405–428 "Semua tindakan sensitif harus dicatat bersama aktor, waktu, perangkat, jenis tindakan, dan alasan jika diperlukan", model data `audit_logs` §14, use case infra "Logging dan audit" §10.4, skenario test §22)
+
+## Perubahan
+
+### Katalog aksi audit
+- **`app/Enums/AuditAction.php`** — sumber tunggal nama aksi `audit_logs`: `sale.created`, `receivable.payment`, `user.created`, `user.updated`, `user.deactivated`, `user.reactivated`, `user.role_changed`, `backup.restored`, `report.financial.viewed`.
+- `CreateSale` dan `RecordReceivablePayment` direfaktor memakai konstanta katalog (nilai string identik; perilaku tidak berubah).
+
+### Perekam jejak audit terpusat (`app/Audit/AuditRecorder.php`)
+- Use case infra §10.4: menulis baris append-only `audit_logs` dengan resolusi berlapis — tenant eksplisit (CLI/test deterministik) → tenant aktor → konteks request (`TenantContext`); `deviceId` eksplisit untuk perangkat (Fase 4).
+- `record(action, ?actor, entityType, entityId, reason, metadata)` memakai model `AuditLog` lama (uuid PK, `UPDATED_AT = null` = append-only; tidak diubah).
+
+### Wiring ke tindakan sensitif (FR-12: aktor + waktu + jenis + alasan + perangkat)
+- **`ManageUser`** — setiap operasi BERHASIL dicatat: `user.created` (metadata peran), `user.updated`, `user.deactivated`/`user.reactivated` + parameter `?reason`, `user.role_changed` (metadata peran) + `?reason`. Entity = user, `entity_id` = **UUID sync identity** (stabil antar-perangkat). Operasi gagal (validasi/otorisasi/last-owner) **tidak** menulis jejak.
+- **`BackupManager::restore`** — mencatat `backup.restored` (aktor opsional, metadata berkas + versi skema + snapshot keselamatan) **setelah** restore sukses, sehingga jejak berada di DB hasil restore sebagai penanda pemulihan. **Best-effort**: kegagalan tulis audit (mis. backup lama tanpa tabel `audit_logs`) hanya masuk log, tidak menggagalkan restore.
+- **`SalesReport`** — akses laporan keuangan dicatat (`report.financial.viewed`, metadata periode) **hanya bila aktor nyata**; CLI/otomasi tanpa aktor tidak mencatat (hindari kebisingan). Pemeriksaan izin dipindah ke `range()` (basis) agar `daily()` dan pemanggilan langsung sama-sama tervalidasi.
+
+## Catatan
+
+- `device_id` masih `null` sampai identitas perangkat tersedia (Fase 4 device handshake); `AuditRecorder` sudah menerima `deviceId` eksplisit.
+- UI daftar/filter audit belum di-wire (pola irisan Fase 3: domain + test dulu).
+- Percobaan tindakan sensitif yang DITOLAK belum dicatat (hanya tindakan berhasil); dapat ditambahkan sebagai kebijakan keamanan berikutnya.
+
+---
+
 # Rebuild POS Universal — Fase 3: Peran pengguna (FR-12) (belum dirilis)
 
 **Tanggal:** 10 Oktober 2026

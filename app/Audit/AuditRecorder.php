@@ -5,6 +5,7 @@ namespace App\Audit;
 use App\Enums\AuditAction;
 use App\Models\AuditLog;
 use App\Models\User;
+use App\Support\Devices\DeviceContext;
 use App\Support\Tenancy\TenantContext;
 
 /**
@@ -16,17 +17,16 @@ use App\Support\Tenancy\TenantContext;
  *   2. fallback tenant aktor;
  *   3. fallback konteks request (`TenantContext`).
  *
- * `deviceId` eksplisit memungkinkan pencatatan perangkat (Fase 4 device
- * handshake); bila kosong, kolom `device_id` dibiarkan null sampai
- * identitas perangkat tersedia.
+ * `deviceId` eksplisit memungkinkan pencatatan perangkat; bila kosong,
+ * fallback ke `DeviceContext` (handshake sinkronisasi Sprint 4), dan baru
+ * dibiarkan null bila tidak ada perangkat ter-bind.
  */
 final class AuditRecorder
 {
     public function __construct(
         private readonly ?string $tenantId = null,
         private readonly ?string $deviceId = null,
-    ) {
-    }
+    ) {}
 
     /**
      * Catat satu tindakan sensitif (append-only; tidak pernah diupdate).
@@ -46,7 +46,7 @@ final class AuditRecorder
         return AuditLog::create([
             'tenant_id' => $this->resolveTenantId($actor),
             'actor_id' => $actor?->id,
-            'device_id' => $this->deviceId,
+            'device_id' => $this->deviceId ?? app(DeviceContext::class)->id(),
             'action' => $action,
             'entity_type' => $entityType,
             'entity_id' => $entityId,

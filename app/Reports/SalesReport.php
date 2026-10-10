@@ -2,6 +2,8 @@
 
 namespace App\Reports;
 
+use App\Audit\AuditRecorder;
+use App\Enums\AuditAction;
 use App\Enums\Permission;
 use App\Models\Product;
 use App\Models\Transaction;
@@ -26,14 +28,19 @@ use Illuminate\Support\Facades\DB;
  * Tenant: deterministik bila `tenantId` eksplisit (CLI/test); tanpa itu
  * mengikuti konteks request. Transaksi yang dihapus (SoftDeletes) tidak
  * dihitung. Bila `$actor` diberikan, izin `report.financial.view`
- * diperiksa (FR-12).
+ * diperiksa (FR-12) dan akses dicatat ke audit (`report.financial.viewed`).
  */
 class SalesReport
 {
+    private readonly AuditRecorder $audit;
+
     public function __construct(
         private readonly ?string $tenantId = null,
         private readonly ?User $actor = null,
-    ) {}
+        ?AuditRecorder $audit = null,
+    ) {
+        $this->audit = $audit ?? new AuditRecorder($this->tenantId);
+    }
 
     /**
      * Laporan satu hari (default: hari ini).
@@ -42,8 +49,6 @@ class SalesReport
      */
     public function daily(?string $date = null): array
     {
-        ActionAuthorizer::assertIf($this->actor, Permission::ViewFinancialReports);
-
         $date ??= now()->toDateString();
 
         return $this->range($date, $date);
@@ -56,6 +61,8 @@ class SalesReport
      */
     public function range(?string $from = null, ?string $to = null): array
     {
+        ActionAuthorizer::assertIf($this->actor, Permission::ViewFinancialReports);
+
         $from ??= now()->startOfDay()->toDateString();
         $to ??= now()->toDateString();
 
@@ -111,6 +118,16 @@ class SalesReport
             ->sum('discount_minor');
 
         $count = $transactions->count();
+
+        // FR-12: akses laporan keuangan dicatat dengan aktor + periode —
+        // hanya bila aktor nyata (CLI/otomasi tanpa aktor tidak dicatat).
+        if ($this->actor !== null) {
+            $this->audit->record(
+                AuditAction::FinancialReportViewed,
+                $this->actor,
+                metadata: ['from' => $from, 'to' => $to],
+            );
+        }
 
         return [
             'from' => $from,

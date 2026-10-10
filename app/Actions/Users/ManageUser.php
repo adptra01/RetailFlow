@@ -2,7 +2,9 @@
 
 namespace App\Actions\Users;
 
+use App\Audit\AuditRecorder;
 use App\Concerns\PasswordValidationRules;
+use App\Enums\AuditAction;
 use App\Enums\Permission;
 use App\Enums\Role;
 use App\Exceptions\Users\LastOwnerProtected;
@@ -19,7 +21,9 @@ use Illuminate\Validation\ValidationException;
  * Manajemen pengguna bersifat per-tenant dan WAJIB diaudit: semua operasi
  * memerlukan aktor dengan izin `user.manage`, dan akun yang dinonaktifkan
  * otomatis ditolak oleh `ActionAuthorizer` (tidak bisa melakukan operasi
- * sensitif apa pun).
+ * sensitif apa pun). Setiap operasi yang BERHASIL dicatat ke `audit_logs`
+ * (entity = user, entity_id = UUID sync identity); operasi yang gagal
+ * (validasi, otorisasi, last-owner) tidak menulis jejak.
  *
  * Aturan keamanan: owner terakhir sebuah tenant tidak dapat dinonaktifkan
  * atau diturunkan perannya — mencegah toko kehilangan akses administrasi.
@@ -28,7 +32,14 @@ class ManageUser
 {
     use PasswordValidationRules;
 
-    public function __construct(private readonly ?string $tenantId = null) {}
+    private readonly AuditRecorder $audit;
+
+    public function __construct(
+        private readonly ?string $tenantId = null,
+        ?AuditRecorder $audit = null,
+    ) {
+        $this->audit = $audit ?? new AuditRecorder($this->tenantId);
+    }
 
     /**
      * Buat pengguna baru dalam tenant (aktif, dengan peran opsional).
@@ -59,6 +70,14 @@ class ManageUser
             $user->assignRole($role->value);
         }
 
+        $this->audit->record(
+            AuditAction::UserCreated,
+            $actor,
+            entityType: 'user',
+            entityId: $user->uuid,
+            metadata: ['role' => $role?->value],
+        );
+
         return $user;
     }
 
@@ -88,6 +107,13 @@ class ManageUser
             'email' => $input['email'],
         ]);
 
+        $this->audit->record(
+            AuditAction::UserUpdated,
+            $actor,
+            entityType: 'user',
+            entityId: $user->uuid,
+        );
+
         return $user;
     }
 
@@ -97,7 +123,7 @@ class ManageUser
      *
      * @throws ActionForbidden|UserNotFound|LastOwnerProtected
      */
-    public function setActive(User $actor, int $userId, bool $active): User
+    public function setActive(User $actor, int $userId, bool $active, ?string $reason = null): User
     {
         ActionAuthorizer::assert($actor, Permission::ManageUsers);
 
@@ -110,6 +136,14 @@ class ManageUser
 
         $user->update(['is_active' => $active]);
 
+        $this->audit->record(
+            $active ? AuditAction::UserReactivated : AuditAction::UserDeactivated,
+            $actor,
+            entityType: 'user',
+            entityId: $user->uuid,
+            reason: $reason,
+        );
+
         return $user;
     }
 
@@ -119,7 +153,7 @@ class ManageUser
      *
      * @throws ActionForbidden|UserNotFound|LastOwnerProtected
      */
-    public function assignRole(User $actor, int $userId, ?Role $role): User
+    public function assignRole(User $actor, int $userId, ?Role $role, ?string $reason = null): User
     {
         ActionAuthorizer::assert($actor, Permission::ManageUsers);
 
@@ -134,6 +168,15 @@ class ManageUser
         }
 
         $user->syncRoles($role === null ? [] : [$role->value]);
+
+        $this->audit->record(
+            AuditAction::UserRoleChanged,
+            $actor,
+            entityType: 'user',
+            entityId: $user->uuid,
+            reason: $reason,
+            metadata: ['role' => $role?->value],
+        );
 
         return $user;
     }

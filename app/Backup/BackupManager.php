@@ -2,6 +2,8 @@
 
 namespace App\Backup;
 
+use App\Audit\AuditRecorder;
+use App\Enums\AuditAction;
 use App\Enums\Permission;
 use App\Exceptions\Backup\BackupCorrupted;
 use App\Exceptions\Backup\BackupException;
@@ -12,7 +14,9 @@ use App\Exceptions\Backup\BackupSchemaMismatch;
 use App\Models\User;
 use App\Support\Auth\ActionAuthorizer;
 use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -28,12 +32,17 @@ use Illuminate\Support\Str;
  */
 final class BackupManager
 {
+    private readonly AuditRecorder $audit;
+
     public function __construct(
         private readonly BackupDriver $driver,
         private readonly string $backupDir,
         private readonly string $schemaVersion,
         private readonly bool $encrypt = false,
-    ) {}
+        ?AuditRecorder $audit = null,
+    ) {
+        $this->audit = $audit ?? new AuditRecorder;
+    }
 
     public static function forDefault(): self
     {
@@ -169,6 +178,28 @@ final class BackupManager
 
         if (! $this->driver->isHealthy()) {
             throw new BackupFailed('Database hasil restore gagal pemeriksaan kesehatan.');
+        }
+
+        // Jejak audit ditulis SETELAH restore berhasil, sehingga tercatat di
+        // database hasil restore sebagai penanda bahwa pemulihan terjadi
+        // (FR-12; aktor + waktu + jenis tindakan + alasan/berkas).
+        //
+        // Best-effort: DB hasil restore bisa berasal dari backup lama yang
+        // belum memiliki tabel `audit_logs`. Kegagalan pencatatan audit tidak
+        // boleh menggagalkan restore yang sudah sukses — dicatat ke log.
+        try {
+            $this->audit->record(
+                AuditAction::BackupRestored,
+                $actor,
+                metadata: [
+                    'backup' => $info->filename,
+                    'schema_version' => $info->schemaVersion,
+                    'safety_snapshot' => $safety->filename,
+                ],
+                reason: 'Pemulihan database dari backup.',
+            );
+        } catch (QueryException $e) {
+            Log::warning('Jejak audit restore tidak tersimpan: '.$e->getMessage());
         }
 
         return $safety;

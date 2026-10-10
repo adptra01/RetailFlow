@@ -34,4 +34,21 @@ enum AuditAction: string
 
     // Mengakses laporan keuangan (SalesReport, izin `report.financial.view`).
     case FinancialReportViewed = 'report.financial.viewed';
+
+    // Konfigurasi profil fitur (FR-13, ConfigureFeatureProfile).
+    case FeatureProfileChanged = 'feature_profile.changed';
+
+    case ModuleEnabled = 'module.enabled';
+
+    case ModuleDisabled = 'module.disabled';
+
+    case TenantConfigured = 'tenant.configured';
+
+    // Kegagalan pencetakan struk (PrintReceipt, §20) — penjualan tetap sah.
+    case ReceiptPrintFailed = 'receipt.print_failed';
+
+    // Identitas perangkat (Sprint 4, NFR-03, §15).
+    case DeviceRegistered = 'device.registered';
+
+    case DeviceRevoked = 'device.revoked';
 }
