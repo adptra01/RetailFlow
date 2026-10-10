@@ -28,7 +28,8 @@ use Illuminate\Support\Str;
  *    original sale instead of creating a duplicate;
  *  - stock safety: quantity is validated against locked rows, converted into
  *    base stock units via the unit conversion factor, and never decremented
- *    past zero (FR-08);
+ *    past zero (FR-08) unless the owner enables the negative-stock policy
+ *    (§11.4, config `pos.inventory.allow_negative_stock`);
  *  - discount honesty (FR-06): snapshots are taken on the line items so later
  *    price/discount changes never alter historical sales;
  *  - receivable basics (FR-07): when payment is partial the sale becomes a
@@ -71,6 +72,7 @@ class CreateSale
      *     device_id?: string|null,
      *     notes?: string|null,
      *     tenant_id?: string|null,
+     *     allow_negative_stock?: bool|null,
      * } $data
      */
     public function handle(array $data): Transaction
@@ -113,6 +115,12 @@ class CreateSale
 
         $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
 
+        // §11.4: kebijakan stok negatif dapat diaktifkan owner. Bila aktif,
+        // penjualan tetap diterapkan meski membuat stok negatif; konfliknya
+        // dicatat terpisah oleh pemanggil (tidak disembunyikan).
+        $allowNegativeStock = (bool) ($data['allow_negative_stock']
+            ?? config('pos.inventory.allow_negative_stock', false));
+
         /** @var array<int, Product> $products */
         $products = Product::query()
             ->whereKey(array_column($items, 'product_id'))
@@ -127,7 +135,7 @@ class CreateSale
                 throw new \InvalidArgumentException("Produk #{$item['product_id']} tidak ditemukan.");
             }
 
-            $this->assertStock($product, $this->baseQuantity($item));
+            $this->assertStock($product, $this->baseQuantity($item), $allowNegativeStock);
         }
 
         $customer = isset($data['customer_id'])
@@ -324,9 +332,9 @@ class CreateSale
         return $paid->subtract($total);
     }
 
-    private function assertStock(Product $product, int $baseQuantity): void
+    private function assertStock(Product $product, int $baseQuantity, bool $allowNegativeStock = false): void
     {
-        if ($product->is_unlimited_stock) {
+        if ($product->is_unlimited_stock || $allowNegativeStock) {
             return;
         }
 

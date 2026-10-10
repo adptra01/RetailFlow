@@ -31,6 +31,18 @@ return [
         'mode' => env('POS_TENANCY_MODE', 'single'),
     ],
 
+    'inventory' => [
+        // §11.4 "Konflik stok": "Owner dapat mengaktifkan kebijakan stok
+        // negatif atau membatasi penjualan berdasarkan kebutuhan bisnis."
+        //
+        // false (default) = batasi penjualan: operasi perangkat yang membuat
+        //   stok negatif tidak diterapkan dan menjadi kasus konflik terbuka
+        //   yang menunggu penyelesaian.
+        // true = izinkan stok negatif: penjualan diterapkan apa adanya, dan
+        //   konflik tetap dicatat agar tidak disembunyikan.
+        'allow_negative_stock' => (bool) env('POS_ALLOW_NEGATIVE_STOCK', false),
+    ],
+
     'offline' => [
         // Plan decision: offline-first applies to native builds only
         // (NativePHP + SQLite). Web/PWA stays online-first for the MVP.
@@ -53,6 +65,11 @@ return [
         // Entri `in_flight` yang lebih tua dari ini dianggap terbengkalai
         // (crash saat mengirim) dan dikembalikan ke `pending` (§13).
         'in_flight_timeout' => (int) env('POS_SYNC_IN_FLIGHT_TIMEOUT', 300),
+        // Token perangkat milik instalasi ini sendiri (dipakai tombol
+        // "Sinkronkan sekarang" pada UI lokal, §11.5). Pada build native,
+        // token ini berasal dari penyimpanan aman perangkat; pada mode
+        // web/on-prem dapat diisi lewat env untuk sinkronisasi ke server pusat.
+        'device_token' => env('POS_SYNC_DEVICE_TOKEN'),
     ],
 
     // Versi rilis & skema database (plan §21: "Setiap rilis memiliki versi

@@ -162,6 +162,14 @@
                 @endcan
             </flux:sidebar.group>
             @endcan
+
+            {{-- Sinkronisasi (§11.5: jumlah operasi tertunda + konflik) --}}
+            <flux:sidebar.group :heading="__('Sistem')" class="grid mt-4">
+                <flux:sidebar.item icon="arrow-path" href="{{ route('sync.index') }}"
+                    :current="request()->routeIs('sync.*')">
+                    {{ __('Sinkronisasi') }}
+                </flux:sidebar.item>
+            </flux:sidebar.group>
         </flux:sidebar.nav>
 
         <flux:spacer />
