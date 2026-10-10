@@ -2,22 +2,27 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToTenant;
+use App\Models\Concerns\HasSyncIdentity;
 use Database\Factories\ProductFactory;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Product extends Model
 {
     /** @use HasFactory<ProductFactory> */
-    use HasFactory;
+    use BelongsToTenant, HasFactory, HasSyncIdentity, SoftDeletes;
+
+    protected $attributes = ['version' => 1];
 
     protected $fillable = [
         'category_id', 'brand_id', 'supplier_id', 'name', 'slug', 'sku', 'barcode',
         'buy_price', 'price', 'stock', 'min_stock', 'image', 'description',
-        'is_active', 'is_unlimited_stock',
+        'is_active', 'is_unlimited_stock', 'tenant_id',
     ];
 
     protected function casts(): array
@@ -29,6 +34,7 @@ class Product extends Model
             'price' => 'decimal:2',
             'stock' => 'integer',
             'min_stock' => 'integer',
+            'version' => 'integer',
         ];
     }
 

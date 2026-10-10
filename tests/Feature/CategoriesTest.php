@@ -113,7 +113,7 @@ class CategoriesTest extends TestCase
             ->call('delete')
             ->assertOk();
 
-        $this->assertDatabaseMissing('categories', [
+        $this->assertSoftDeleted('categories', [
             'id' => $category->id,
         ]);
     }

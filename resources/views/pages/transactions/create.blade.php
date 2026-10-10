@@ -1,11 +1,14 @@
 <?php
 
+use App\Actions\Sales\CreateSale;
+use App\Exceptions\Sales\InsufficientStock;
+use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Models\Category;
 use App\Models\Customer;
 use App\Models\Product;
 use App\Models\ProductUnit;
 use App\Models\Transaction;
-use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Flux\Flux;
 use Illuminate\Support\Str;
 use Livewire\WithPagination;
@@ -31,7 +34,10 @@ state([
     'cart' => [],
     'payment_method' => 'cash',
     'paid_amount' => 0,
+    'discount_type' => 'none', // none | percent | nominal (FR-06)
+    'discount_value' => 0,
     'notes' => '',
+    'client_request_id' => '',
     'showConfirmModal' => false,
     'showUnitModal' => false,
     'showSuccessModal' => false,
@@ -47,6 +53,7 @@ $filteredCustomers = computed(function () {
     if (strlen($this->customer_search ?? '') < 1) {
         return collect();
     }
+
     return Customer::where('name', 'like', '%' . $this->customer_search . '%')
         ->orderBy('name')->limit(10)->get();
 });
@@ -54,11 +61,11 @@ $filteredCustomers = computed(function () {
 $products = computed(function () {
     $query = Product::query()->with('units')->where('is_active', true);
 
-    if (!empty($this->category_id)) {
+    if (! empty($this->category_id)) {
         $query->where('category_id', $this->category_id);
     }
 
-    if (!empty($this->productSearch)) {
+    if (! empty($this->productSearch)) {
         $query->where(function ($q) {
             $q->where('name', 'like', '%' . $this->productSearch . '%')
               ->orWhere('sku', 'like', '%' . $this->productSearch . '%')
@@ -69,14 +76,30 @@ $products = computed(function () {
     return $query->orderBy('name')->paginate(12);
 });
 
-$totalAmount = computed(function () {
-    return collect($this->cart)->sum('subtotal');
+/*
+ * Money: minor units (IDR exponent 0 -> minor == rupiah). The cart still
+ * carries decimal floats for the transitional UI; the domain action is fed
+ * integer minor units only.
+ */
+$subtotalMinor = computed(fn () => (int) round((float) collect($this->cart)->sum('subtotal')));
+
+$discountMinor = computed(function () {
+    if ($this->discount_type === 'percent' && $this->discount_value > 0) {
+        return (int) round($this->subtotalMinor * (float) $this->discount_value / 100);
+    }
+
+    if ($this->discount_type === 'nominal' && $this->discount_value > 0) {
+        return (int) round((float) $this->discount_value);
+    }
+
+    return 0;
 });
 
-$changeAmount = computed(function () {
-    $paid = (float) ($this->paid_amount ?: 0);
-    return $paid - (float) ($this->totalAmount ?: 0);
-});
+$totalMinor = computed(fn () => max(0, $this->subtotalMinor - $this->discountMinor));
+
+$changeMinor = computed(fn () => (int) round((float) ($this->paid_amount ?: 0)) - $this->totalMinor);
+
+$isCredit = computed(fn () => $this->changeMinor < 0);
 
 $openUnitSelector = function ($productId) {
     $this->selectedProduct = Product::with('units')->findOrFail($productId);
@@ -86,7 +109,7 @@ $openUnitSelector = function ($productId) {
 
 $addToCart = function () {
     $product = $this->selectedProduct;
-    if (!$product || !$this->selectedUnitId) {
+    if (! $product || ! $this->selectedUnitId) {
         Flux::toast(variant: 'error', text: __('Please select a unit.'));
         return;
     }
@@ -100,7 +123,7 @@ $addToCart = function () {
             $item['subtotal'] = $item['quantity'] * $item['unit_price'];
             $this->showUnitModal = false;
             $this->selectedProduct = null;
-            $this->paid_amount = $this->totalAmount;
+            $this->paid_amount = $this->totalMinor;
             return;
         }
     }
@@ -111,7 +134,7 @@ $addToCart = function () {
         'product_unit_id' => $unit->id,
         'unit_name' => $unit->name,
         'unit_abbreviation' => $unit->abbreviation,
-        'conversion_factor' => $unit->conversion_factor,
+        'conversion_factor' => (float) $unit->conversion_factor,
         'name' => $product->name . ' (' . $unit->abbreviation . ')',
         'unit_price' => (float) $unit->price,
         'quantity' => 1,
@@ -120,14 +143,14 @@ $addToCart = function () {
 
     $this->showUnitModal = false;
     $this->selectedProduct = null;
-    $this->paid_amount = $this->totalAmount;
+    $this->paid_amount = $this->totalMinor;
 };
 
 $incrementQty = function ($index) {
     if (isset($this->cart[$index])) {
         $this->cart[$index]['quantity']++;
         $this->cart[$index]['subtotal'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price'];
-        $this->paid_amount = $this->totalAmount;
+        $this->paid_amount = $this->totalMinor;
     }
 };
 
@@ -139,13 +162,13 @@ $decrementQty = function ($index) {
             $this->cart[$index]['quantity']--;
             $this->cart[$index]['subtotal'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price'];
         }
-        $this->paid_amount = $this->totalAmount;
+        $this->paid_amount = $this->totalMinor;
     }
 };
 
 $removeFromCart = function ($index) {
     array_splice($this->cart, $index, 1);
-    $this->paid_amount = $this->totalAmount;
+    $this->paid_amount = $this->totalMinor;
 };
 
 $selectCustomer = function ($id, $name) {
@@ -169,70 +192,60 @@ $confirmSave = function () {
     $this->validate([
         'paid_amount' => 'required|numeric|min:0',
         'payment_method' => 'required|string|in:cash,transfer,debit_card,credit_card',
+        'discount_type' => 'required|string|in:none,percent,nominal',
+        'discount_value' => 'nullable|numeric|min:0',
         'notes' => 'nullable|string|max:500',
     ]);
 
-    $isCredit = ($this->paid_amount ?? 0) < $this->totalAmount;
-    if ($isCredit && !$this->customer_id) {
+    // Credit sales need a customer (FR-07).
+    if ($this->isCredit && ! $this->customer_id) {
         Flux::toast(variant: 'error', text: __('Select customer for credit sale.'));
         return;
+    }
+
+    // Idempotency key: one per logical checkout attempt (FR-04).
+    if ($this->client_request_id === '') {
+        $this->client_request_id = (string) Str::uuid7();
     }
 
     $this->showConfirmModal = true;
 };
 
 $save = function () {
-    $invoiceNumber = 'INV-' . now()->format('YmdHis') . '-' . strtoupper(Str::random(6));
+    try {
+        $items = collect($this->cart)->map(fn ($item) => [
+            'product_id' => (int) $item['product_id'],
+            'product_unit_id' => isset($item['product_unit_id']) ? (int) $item['product_unit_id'] : null,
+            'unit_name' => $item['unit_name'] ?? null,
+            'quantity' => (int) $item['quantity'],
+            'unit_price_minor' => Money::fromMajor((float) $item['unit_price'])->minor(),
+            'conversion_factor' => (float) ($item['conversion_factor'] ?? 1),
+        ])->values()->all();
 
-    $isCredit = ($this->paid_amount ?? 0) < $this->totalAmount;
+        $transaction = app(CreateSale::class)->handle([
+            'user_id' => auth()->id(),
+            'customer_id' => $this->customer_id,
+            'customer_name' => $this->customer_name ?: 'Umum',
+            'payment_method' => $this->payment_method,
+            'paid_minor' => Money::fromMajor((float) ($this->paid_amount ?: 0))->minor(),
+            'discount_percent' => $this->discount_type === 'percent' ? (float) $this->discount_value : null,
+            'discount_minor' => $this->discount_type === 'nominal' ? (int) $this->discount_value : null,
+            'client_request_id' => $this->client_request_id ?: null,
+            'notes' => $this->notes ?? '',
+            'items' => $items,
+        ]);
 
-    $transaction = Transaction::create([
-        'user_id' => auth()->id(),
-        'customer_id' => $this->customer_id,
-        'customer_name' => $this->customer_name ?: 'Umum',
-        'invoice_number' => $invoiceNumber,
-        'total_amount' => $this->totalAmount,
-        'paid_amount' => $this->paid_amount,
-        'change_amount' => $this->changeAmount,
-        'payment_method' => $this->payment_method,
-        'payment_status' => $isCredit ? 'credit' : 'paid',
-        'notes' => $this->notes ?? '',
-    ]);
+        // Success: the sale is committed before the cart empties (FR-04).
+        $this->reset(['customer_name', 'customer_id', 'customer_search', 'category_id', 'productSearch', 'cart', 'paid_amount', 'payment_method', 'discount_type', 'discount_value', 'notes', 'client_request_id', 'showConfirmModal']);
 
-    if ($isCredit && $this->customer_id) {
-        $customer = Customer::find($this->customer_id);
-        if ($customer) {
-            $customer->increment('balance', $this->totalAmount - $this->paid_amount);
-        }
+        $this->savedTransactionId = $transaction->id;
+        $this->savedInvoiceNumber = $transaction->invoice_number;
+        $this->showSuccessModal = true;
+    } catch (InsufficientStock|InvalidPaymentAmount|\InvalidArgumentException $e) {
+        // Failure must never empty the cart (FR-04).
+        $this->showConfirmModal = false;
+        Flux::toast(variant: 'error', text: $e->getMessage());
     }
-
-    $items = [];
-    foreach ($this->cart as $item) {
-        $items[] = [
-            'transaction_id' => $transaction->id,
-            'product_id' => $item['product_id'],
-            'product_unit_id' => $item['product_unit_id'],
-            'unit_name' => $item['unit_name'],
-            'quantity' => $item['quantity'],
-            'unit_price' => $item['unit_price'],
-            'subtotal' => $item['subtotal'],
-            'created_at' => now(),
-            'updated_at' => now(),
-        ];
-
-        $product = Product::find($item['product_id']);
-        if ($product && !$product->is_unlimited_stock) {
-            $baseQty = $item['quantity'] * $item['conversion_factor'];
-            $product->decrement('stock', $baseQty);
-        }
-    }
-    TransactionItem::insert($items);
-
-    $this->reset(['customer_name', 'customer_id', 'customer_search', 'category_id', 'productSearch', 'cart', 'paid_amount', 'payment_method', 'notes', 'showConfirmModal']);
-
-    $this->savedTransactionId = $transaction->id;
-    $this->savedInvoiceNumber = $invoiceNumber;
-    $this->showSuccessModal = true;
 };
 
 ?>
@@ -337,7 +350,7 @@ $save = function () {
                                     <div class="space-y-2" wire:key="customer-autocomplete">
                                         <flux:label>{{ __('Customer') }}</flux:label>
                                         <div class="relative">
-                                            <flux:input wire:model.live="customer_search" placeholder="{{ __('Cari pelanggan... (kosongkan untuk tanpa nama) }}" />
+                                            <flux:input wire:model.live="customer_search" placeholder="{{ __('Cari pelanggan... (kosongkan untuk tanpa nama)') }}" />
                                             @if ($customer_name)
                                                 <button type="button" wire:click="clearCustomer"
                                                     class="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-red-500">
@@ -390,8 +403,20 @@ $save = function () {
                                         </div>
 
                                         <div class="flex items-center justify-between border-t border-zinc-200 pt-3 text-base font-bold dark:border-zinc-700">
+                                            <span>{{ __('Subtotal') }}</span>
+                                            <span class="text-blue-600 dark:text-blue-400">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</span>
+                                        </div>
+
+                                        @if ($this->discountMinor > 0)
+                                            <div class="flex items-center justify-between text-sm text-green-600 dark:text-green-400">
+                                                <span>{{ __('Discount') }}</span>
+                                                <span>-{{ Number::currency($this->discountMinor, 'IDR', 'id') }}</span>
+                                            </div>
+                                        @endif
+
+                                        <div class="flex items-center justify-between border-t border-zinc-200 pt-2 text-base font-bold dark:border-zinc-700">
                                             <span>{{ __('Total') }}</span>
-                                            <span class="text-blue-600 dark:text-blue-400">{{ Number::currency($this->totalAmount, 'IDR', 'id') }}</span>
+                                            <span class="text-blue-600 dark:text-blue-400">{{ Number::currency($this->totalMinor, 'IDR', 'id') }}</span>
                                         </div>
                                     @else
                                         <div class="rounded-lg border border-dashed border-zinc-300 p-4 text-center text-sm text-zinc-500 dark:border-zinc-600">
@@ -413,15 +438,30 @@ $save = function () {
 
                                     <flux:input wire:model.live="paid_amount" :label="__('Paid Amount')" type="number" step="0.01" min="0" />
 
+                                    <div class="grid grid-cols-2 gap-3">
+                                        <flux:select wire:model="discount_type" :label="__('Discount')">
+                                            <flux:select.option value="none">{{ __('None') }}</flux:select.option>
+                                            <flux:select.option value="percent">{{ __('Percent') }}</flux:select.option>
+                                            <flux:select.option value="nominal">{{ __('Nominal') }}</flux:select.option>
+                                        </flux:select>
+
+                                        <flux:input wire:model="discount_value" :label="__('Discount Value')" type="number"
+                                            step="0.01" min="0"
+                                            :placeholder="$this->discount_type === 'percent' ? '0-100' : '0'" />
+                                    </div>
+
                                     <div>
                                         <flux:label>{{ __('Change') }}</flux:label>
                                         <div @class([
                                             'mt-1 text-lg font-bold',
-                                            'text-green-600 dark:text-green-400' => $this->changeAmount >= 0,
-                                            'text-red-600 dark:text-red-400' => $this->changeAmount < 0,
+                                            'text-green-600 dark:text-green-400' => $this->changeMinor >= 0,
+                                            'text-red-600 dark:text-red-400' => $this->changeMinor < 0,
                                         ])>
-                                            {{ Number::currency($this->changeAmount, 'IDR', 'id') }}
+                                            {{ Number::currency($this->changeMinor, 'IDR', 'id') }}
                                         </div>
+                                        @if ($this->isCredit)
+                                            <p class="mt-1 text-xs text-red-500">{{ __('Credit sale — select a customer.') }}</p>
+                                        @endif
                                     </div>
                                 </div>
                             </div>
@@ -519,9 +559,19 @@ $save = function () {
                                 @endforeach
                             </tbody>
                             <tfoot>
+                                <tr class="border-t bg-zinc-50 text-sm dark:border-zinc-700 dark:bg-zinc-800">
+                                    <td colspan="3" class="px-3 py-2 text-right">{{ __('Subtotal') }}</td>
+                                    <td class="px-3 py-2 text-right">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</td>
+                                </tr>
+                                @if ($this->discountMinor > 0)
+                                    <tr class="bg-zinc-50 text-sm text-green-600 dark:bg-zinc-800 dark:text-green-400">
+                                        <td colspan="3" class="px-3 py-2 text-right">{{ __('Discount') }}</td>
+                                        <td class="px-3 py-2 text-right">-{{ Number::currency($this->discountMinor, 'IDR', 'id') }}</td>
+                                    </tr>
+                                @endif
                                 <tr class="border-t bg-zinc-50 font-semibold dark:border-zinc-700 dark:bg-zinc-800">
                                     <td colspan="3" class="px-3 py-2 text-right">{{ __('Total') }}</td>
-                                    <td class="px-3 py-2 text-right">{{ Number::currency($this->totalAmount, 'IDR', 'id') }}</td>
+                                    <td class="px-3 py-2 text-right">{{ Number::currency($this->totalMinor, 'IDR', 'id') }}</td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -538,9 +588,15 @@ $save = function () {
                         </div>
                         <div>
                             <span class="text-zinc-500">{{ __('Change') }}</span>
-                            <p class="font-medium">{{ Number::currency($this->changeAmount, 'IDR', 'id') }}</p>
+                            <p class="font-medium">{{ Number::currency($this->changeMinor, 'IDR', 'id') }}</p>
                         </div>
                     </div>
+
+                    @if ($this->isCredit && $customer_name)
+                        <div class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                            {{ __('This is a credit sale. The unpaid balance will be added to the customer account.') }}
+                        </div>
+                    @endif
 
                     @if ($notes)
                         <div class="text-sm">
@@ -553,7 +609,10 @@ $save = function () {
                         <flux:modal.close>
                             <flux:button variant="filled">{{ __('Cancel') }}</flux:button>
                         </flux:modal.close>
-                        <flux:button variant="primary" type="submit">{{ __('Confirm & Save') }}</flux:button>
+                        <flux:button variant="primary" type="submit" wire:loading.attr="disabled" wire:target="save">
+                            <span wire:loading.remove wire:target="save">{{ __('Confirm & Save') }}</span>
+                            <span wire:loading wire:target="save">{{ __('Saving...') }}</span>
+                        </flux:button>
                     </div>
                 </form>
             </flux:modal>

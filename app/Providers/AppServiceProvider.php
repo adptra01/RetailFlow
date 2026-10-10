@@ -4,7 +4,9 @@ namespace App\Providers;
 
 use App\Models\Product;
 use App\Observers\StockObserver;
+use App\Support\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
@@ -17,7 +19,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(TenantContext::class);
     }
 
     /**
@@ -36,6 +38,9 @@ class AppServiceProvider extends ServiceProvider
     protected function configureDefaults(): void
     {
         Date::use(CarbonImmutable::class);
+
+        // Surface N+1 queries and silent attribute issues during local development.
+        Model::preventLazyLoading($this->app->environment('local'));
 
         DB::prohibitDestructiveCommands(
             app()->isProduction(),

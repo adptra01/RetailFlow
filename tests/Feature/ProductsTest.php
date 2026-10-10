@@ -79,7 +79,7 @@ class ProductsTest extends TestCase
             ->call('delete')
             ->assertOk();
 
-        $this->assertDatabaseMissing('products', [
+        $this->assertSoftDeleted('products', [
             'id' => $product->id,
         ]);
     }

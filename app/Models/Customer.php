@@ -2,18 +2,30 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToTenant;
+use App\Models\Concerns\HasSyncIdentity;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Str;
 
 class Customer extends Model
 {
-    protected $fillable = ['name', 'slug', 'phone', 'address', 'credit_limit', 'balance', 'price_tier', 'notes'];
+    use BelongsToTenant, HasSyncIdentity, SoftDeletes;
+
+    protected $attributes = ['version' => 1];
+
+    protected $fillable = [
+        'name', 'slug', 'phone', 'address', 'credit_limit', 'balance',
+        'price_tier', 'notes', 'tenant_id',
+    ];
 
     protected function casts(): array
     {
         return [
             'credit_limit' => 'decimal:2',
             'balance' => 'decimal:2',
+            'version' => 'integer',
         ];
     }
 
@@ -26,7 +38,7 @@ class Customer extends Model
         });
     }
 
-    public function payments()
+    public function payments(): HasMany
     {
         return $this->hasMany(CustomerPayment::class);
     }
