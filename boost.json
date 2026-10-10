@@ -8,12 +8,16 @@
     "nightwatch": false,
     "sail": false,
     "skills": [
+        "infer-conventions",
+        "deploying-to-cloud",
         "folio-routing",
         "fortify-development",
         "laravel-best-practices",
+        "testing-best-practices",
         "fluxui-development",
         "livewire-development",
         "volt-development",
+        "tailwindcss-development",
         "deploying-laravel-cloud"
     ]
 }
