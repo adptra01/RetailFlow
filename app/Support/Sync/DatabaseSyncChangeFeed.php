@@ -38,6 +38,10 @@ final class DatabaseSyncChangeFeed implements SyncChangeFeed
             'entity_id' => $change->entity_id,
             'operation' => $change->operation->value,
             'payload' => $change->payload,
+            // Perangkat memakai `device_id` untuk mengenali perubahannya
+            // sendiri dan tidak menerapkannya kembali (§11.1 "Sinkronisasi
+            // harus aman terhadap pengiriman ulang").
+            'device_id' => $change->device_id,
             'created_at' => $change->created_at?->toIso8601String(),
         ])->all();
 

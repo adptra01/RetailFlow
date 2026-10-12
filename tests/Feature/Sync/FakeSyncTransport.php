@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Sync;
 
+use App\Support\Sync\SyncChangeBatch;
 use App\Support\Sync\SyncTransport;
 use Throwable;
 
@@ -21,6 +22,15 @@ final class FakeSyncTransport implements SyncTransport
 
     /** @var array<string, string|null> operation_id => error */
     private array $errors = [];
+
+    /** @var list<SyncChangeBatch> halaman tarik yang akan dikembalikan berurutan */
+    private array $pullPages = [];
+
+    /** @var list<Throwable> */
+    private array $pullFailures = [];
+
+    /** @var list<array{token: string, cursor: string|null, limit: int}> */
+    public array $pullCalls = [];
 
     /**
      * @param  list<array<string, mixed>>  $operations
@@ -49,6 +59,38 @@ final class FakeSyncTransport implements SyncTransport
     public function failNext(Throwable $exception): self
     {
         $this->failures[] = $exception;
+
+        return $this;
+    }
+
+    /**
+     * Tarik perubahan: mengembalikan halaman yang disiapkan berurutan
+     * (`setPullPages`), atau halaman kosong bila tidak ada.
+     */
+    public function pull(string $token, ?string $cursor = null, int $limit = 100): SyncChangeBatch
+    {
+        $this->pullCalls[] = ['token' => $token, 'cursor' => $cursor, 'limit' => $limit];
+
+        if ($this->pullFailures !== []) {
+            throw array_shift($this->pullFailures);
+        }
+
+        return array_shift($this->pullPages) ?? new SyncChangeBatch($cursor);
+    }
+
+    /**
+     * @param  list<SyncChangeBatch>  $pages
+     */
+    public function setPullPages(array $pages): self
+    {
+        $this->pullPages = $pages;
+
+        return $this;
+    }
+
+    public function failNextPull(Throwable $exception): self
+    {
+        $this->pullFailures[] = $exception;
 
         return $this;
     }

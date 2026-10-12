@@ -1,3 +1,45 @@
+# Rebuild POS Universal — Fase 5: Tarik Perubahan Server ke Perangkat (§11.1, §11.3 langkah 9–11, §11.5, Increment 47) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§11.1 "Perangkat melacak perubahan yang sudah dikirim dan dikonfirmasi", "Sinkronisasi harus aman terhadap pengiriman ulang"; §11.3 langkah 9 "Perangkat menarik perubahan server sejak cursor terakhir" & langkah 10 "Perangkat menerapkan perubahan", langkah 11 "Konflik dicatat dan ditampilkan kepada pengguna yang berwenang"; §11.5 perangkat lama offline; §12 tenant dari identitas perangkat; §17.1 identitas sinkronisasi; §18 `GET /api/v1/sync/pull?cursor=...`; Sprint 4 item 3 "API push/pull").
+
+## Latar
+Sisi server penarikan perubahan sudah lengkap sejak Sprint 4 item 4 (jurnal `sync_changes`, kursor monoton, endpoint `GET /api/v1/sync/pull`, pengujian paginasi & isolasi tenant). Yang belum ada adalah **sisi perangkat**: `SyncTransport` hanya punya `push()`, sehingga urutan §11.3 berhenti di langkah 8. Tanpa langkah 9–10, perangkat yang membuat penjualan/retur offline tidak pernah menerima perubahan pihak lain — katalog, harga, dan pelanggan yang diubah di server (atau perangkat lain) tidak pernah sampai, dan konflik antar-perangkat hanya bisa diketahui server, bukan ditampilkan di tempat kerja yang menghadapinya.
+
+## Perubahan
+
+### Transport
+- **`SyncTransport::pull(string $token, ?string $cursor, int $limit): SyncChangeBatch`** — kontrak baru untuk penarikan (§11.3 langkah 9); hasil tak diketahui (koneksi/timeout/5xx) tetap `SyncTransportException` sehingga perangkat mengulang dari kursor lama.
+- **`HttpSyncTransport::pull()`** — `GET {server}/api/v1/sync/pull?cursor=&limit=` dengan token perangkat, menerjemahkan envelope server (`cursor`/`has_more`/`changes`) menjadi `SyncChangeBatch`.
+
+### Penerapan perubahan lokal
+- **`Support\Sync\DatabaseServerChangeApplier`** (baru) — menerapkan satu perubahan jurnal pada basis data lokal (§11.3 langkah 10) dengan aturan:
+  - **tidak memantulkan perubahan sendiri** (§11.1): perubahan yang `device_id`-nya perangkat ini dilewati;
+  - **hanya data acuan yang dicerminkan** — produk, kategori, pelanggan, pemasok, promosi, menu, bahan. Dokumen transaksi/pesanan/pembelian/mutasi stok **tidak** ditimpa dari server, karena itu pekerjaan perangkat masing-masing (§11.4 "transaksi perangkat tidak dihapus diam-diam"); jenis entitas lain dilewati tanpa menghapus data (§11.5);
+  - **idempoten** (§11.1): data lokal yang sudah sama dilewati, dan `updated_at` lokal disetel ke waktu perubahan server sehingga penerapan ulang tidak salah dibaca sebagai suntingan lokal yang lebih baru;
+  - **tidak menimpa suntingan lokal yang lebih baru** (§11.3 langkah 11): perubahan server yang lebih tua daripada perubahan lokal tidak diterapkan, dan sebuah kasus konflik (`data`) dicatat — idempoten per `(operation_id, type)`;
+  - **tanpa penjurnalan ulang** (§11.1): penerapan dibungkus `SyncChangeJournal::withoutRecording()` supaya perubahan yang ditarik tidak dicatat sebagai perubahan baru dan tidak memantul antar-perangkat tanpa henti.
+- **`Support\Sync\SyncChangeJournal::withoutRecording()`** — mode penjurnalan yang ditangguhkan (dipulihkan otomatis lewat `finally`, aman bersarang).
+
+### Orkestrasi & kursor
+- **`Actions\Sync\PullServerChanges`** (baru) — satu putaran penarikan: menarik halaman berurutan sampai `has_more` false atau batas `pos.sync.max_pull_pages` (default 20) tercapai (§11.5 perangkat lama offline menyusul bertahap), menerapkan setiap perubahan lewat applier, dan menyimpan kursor pada `devices.last_sync_cursor` **hanya setelah halaman itu diterapkan** — kegagalan transport tidak pernah melompati data. Token perangkat, keberadaan perangkat, dan status cabut (§15) divalidasi seperti pada jalur push.
+- **`Actions\Sync\SyncNow`** — kini satu putaran penuh §11.3: kirim outbox (langkah 3–8) lalu tarik & terapkan perubahan server (langkah 9–10) secara default. Kegagalan penarikan **tidak** membatalkan pengiriman yang sudah dikonfirmasi: pesannya dikembalikan sebagai `pullError` dan putaran berikutnya melanjutkan dari kursor yang sama.
+- **`SyncPushSummary`** — membawa `pulled` (`SyncPullSummary`: applied/skipped/conflicted/pages/cursor/has_more) dan `pullError`; `toArray()` ikut memuatnya.
+- **`config/pos.php`** — `pos.sync.max_pull_pages` (env `POS_SYNC_MAX_PULL_PAGES`, default 20).
+- **`DatabaseSyncChangeFeed`** — payload perubahan kini menyertakan `device_id` (agar perangkat dapat mengenali perubahannya sendiri).
+- **`Enums\ServerChangeOutcome`** (baru: `applied`/`skipped`/`conflicted`) dan **`SyncConflictType::Data`** ("Konflik data") untuk konflik suntingan lokal vs perubahan server.
+- **UI `/sync`** — tombol "Sinkronkan sekarang" kini juga menampilkan hasil penarikan (diterapkan/dilewati/konflik) dan memberi peringatan eksplisit bila penarikan gagal sementara pengiriman berhasil.
+
+### Pengujian
+- **`tests/Feature/Sync/PullSyncTest.php`** (16) — produk baru dari server dibuat lokal (identitas §17.1 & tenant §12 dihormati, kursor tersimpan, **tidak** menulis jurnal baru); perubahan lebih baru diterapkan; penerapan ulang tanpa efek (dan `updated_at` tidak bergeser); perubahan milik perangkat sendiri dilewati; jenis entitas tak dicerminkan dilewati tanpa kehilangan data; perubahan server yang lebih tua tidak menimpa suntingan lokal dan menghasilkan kasus konflik `data` (tidak tergandakan saat diulang); penghapusan dari server menghapus baris lokal, penghapusan tanpa baris lokal dilewati; paginasi sampai habis; batas halaman membatasi satu putaran **dan** menyimpan kemajuan (putaran berikutnya menyusul); kegagalan transport tidak menggeser kursor; token wajib; perangkat dicabut ditolak; `SyncNow` push-lalu-pull dalam satu putaran; kegagalan penarikan tidak membatalkan pengiriman dan dilaporkan sebagai `pullError`.
+- **`FakeSyncTransport`/`LoopbackSyncTransport`** — mendukung `pull()` (loopback menembus endpoint nyata, termasuk autentikasi perangkat & kursor).
+
+## Status suite
+- **779 passed / 0 failed / 4 skipped** (2729 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 42 file dipindai, 1 issue diperbaiki, sisanya bersih.
+- Utang yang masih terbuka: adaptor payment gateway/QRIS (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, dan pemeriksaan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`).
+
+---
+
 # Rebuild POS Universal — Fase 5: Retur Penjualan dari Perangkat (§11.1–§11.3, §17.1, §17.4, Increment 46) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

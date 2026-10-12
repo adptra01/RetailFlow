@@ -2,6 +2,7 @@
 
 namespace App\Actions\Sync;
 
+use App\Exceptions\Sync\SyncTransportException;
 use App\Models\Device;
 use App\Support\Sync\Outbox;
 use App\Support\Sync\SyncPushSummary;
@@ -12,11 +13,20 @@ use RuntimeException;
  * Satu putaran sinkronisasi manual dari UI (Sprint 4 item 8 — "Sinkronkan
  * sekarang"; §11.3).
  *
- * Perangkat mengirim antrean outbox-nya ke server lalu mengembalikan
- * ringkasan hasil. Token perangkat diambil dari parameter eksplisit, atau
- * dari `config('pos.sync.device_token')` (instalasi/on-prem, lihat
+ * Putaran penuh mengikuti urutan §11.3: perangkat mengirim antrean outbox-nya
+ * ke server (langkah 3–8), lalu — bila diminta — menarik perubahan server
+ * sejak kursor terakhir (langkah 9) dan menerapkannya pada basis data lokal
+ * (langkah 10) lewat `PullServerChanges`.
+ *
+ * Token perangkat diambil dari parameter eksplisit, atau dari
+ * `config('pos.sync.device_token')` (instalasi/on-prem, lihat
  * `config/pos.php`). Bila token tidak tersedia, aksi melempar
  * `RuntimeException` agar UI dapat memberi tahu pengguna alih-alih diam.
+ *
+ * Kegagalan penarikan perubahan TIDAK membatalkan pengiriman yang sudah
+ * dikonfirmasi server: pesannya dikembalikan sebagai `pullError` dan putaran
+ * berikutnya melanjutkan dari kursor yang sama (§11.3 "Pengiriman ulang
+ * setelah timeout harus aman").
  *
  * Idempotensi & crash-safety tetap dijaga `PushOutbox` (§11.3): hasil tak
  * diketahui → operasi kembali ke `pending` dan diulang.
@@ -32,8 +42,9 @@ final class SyncNow
 
     /**
      * @param  string|null  $token  token perangkat; null = pakai konfigurasi
+     * @param  bool  $pull  tarik & terapkan perubahan server setelah push (§11.3 langkah 9–10)
      */
-    public function handle(?string $token = null, ?int $limit = null): SyncPushSummary
+    public function handle(?string $token = null, ?int $limit = null, bool $pull = true): SyncPushSummary
     {
         $token ??= (string) config('pos.sync.device_token');
 
@@ -68,6 +79,35 @@ final class SyncNow
 
         $device->markSeen();
 
-        return $summary;
+        if (! $pull) {
+            return $summary;
+        }
+
+        try {
+            $pulled = (new PullServerChanges(
+                $this->tenantId ?? (string) $device->tenant_id,
+                $this->deviceId,
+                $transport,
+            ))->handle($token, $limit);
+        } catch (SyncTransportException $e) {
+            // Pengiriman sudah dikonfirmasi server; penarikan diulang nanti.
+            return new SyncPushSummary(
+                sent: $summary->sent,
+                synced: $summary->synced,
+                failed: $summary->failed,
+                conflicted: $summary->conflicted,
+                retrying: $summary->retrying,
+                pullError: $e->getMessage(),
+            );
+        }
+
+        return new SyncPushSummary(
+            sent: $summary->sent,
+            synced: $summary->synced,
+            failed: $summary->failed,
+            conflicted: $summary->conflicted,
+            retrying: $summary->retrying,
+            pulled: $pulled,
+        );
     }
 }

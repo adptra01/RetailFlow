@@ -87,6 +87,10 @@ return [
         // Entri `in_flight` yang lebih tua dari ini dianggap terbengkalai
         // (crash saat mengirim) dan dikembalikan ke `pending` (§13).
         'in_flight_timeout' => (int) env('POS_SYNC_IN_FLIGHT_TIMEOUT', 300),
+        // Batas halaman tarik perubahan dalam satu putaran (§11.3 langkah 9,
+        // §11.5): perangkat yang lama offline menyusul bertahap, dan satu
+        // putaran tidak berjalan tanpa batas.
+        'max_pull_pages' => (int) env('POS_SYNC_MAX_PULL_PAGES', 20),
         // Token perangkat milik instalasi ini sendiri (dipakai tombol
         // "Sinkronkan sekarang" pada UI lokal, §11.5). Pada build native,
         // token ini berasal dari penyimpanan aman perangkat; pada mode

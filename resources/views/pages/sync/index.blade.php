@@ -63,6 +63,25 @@ $syncNow = function () {
                 'retrying' => $summary->retrying,
             ]
         ));
+
+        // §11.3 langkah 9–10: perubahan server sejak kursor terakhir diterapkan
+        // pada data lokal. Kegagalan penarikan tidak membatalkan pengiriman di
+        // atas — beri tahu pengguna agar tidak menyangka semuanya selesai.
+        if ($summary->pullError !== null) {
+            Flux::toast(variant: 'warning', text: __(
+                'Perubahan dari server belum dapat ditarik: :error Putaran berikutnya akan mencoba lagi.',
+                ['error' => $summary->pullError]
+            ));
+        } elseif ($summary->pulled !== null && $summary->pulled->total() > 0) {
+            Flux::toast(variant: 'success', text: __(
+                'Perubahan dari server: :applied diterapkan, :skipped dilewati, :conflict konflik.',
+                [
+                    'applied' => $summary->pulled->applied,
+                    'skipped' => $summary->pulled->skipped,
+                    'conflict' => $summary->pulled->conflicted,
+                ]
+            ));
+        }
     } catch (\Throwable $e) {
         Flux::toast(variant: 'danger', text: $e->getMessage());
     }

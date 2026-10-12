@@ -14,10 +14,18 @@ enum SyncConflictType: string
      */
     case Stock = 'stock';
 
+    /**
+     * Perubahan server yang lebih tua daripada suntingan lokal yang belum
+     * terkirim (§11.3 langkah 11). Data lokal tidak ditimpa diam-diam;
+     * konflik ditampilkan agar pengguna berwenang memutuskan.
+     */
+    case Data = 'data';
+
     public function label(): string
     {
         return match ($this) {
             self::Stock => 'Konflik stok',
+            self::Data => 'Konflik data',
         };
     }
 }

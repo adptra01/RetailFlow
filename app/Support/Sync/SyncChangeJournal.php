@@ -21,13 +21,45 @@ use Illuminate\Support\Str;
  */
 final class SyncChangeJournal
 {
+    /**
+     * Saat true, `record()` tidak menulis apa pun. Dipakai ketika perangkat
+     * MENERAPKAN perubahan yang ditarik dari server (§11.3 langkah 10):
+     * perubahan itu sudah ada di jurnal server, dan mencatatnya lagi akan
+     * memantulkannya ke perangkat lain tanpa henti (§11.1).
+     */
+    private static bool $suppressed = false;
+
     public function __construct(
         private readonly ?string $tenantId = null,
         private readonly ?string $deviceId = null,
     ) {}
 
+    /**
+     * Jalankan `$callback` dengan penjurnalan dimatikan.
+     *
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutRecording(callable $callback): mixed
+    {
+        $previous = self::$suppressed;
+        self::$suppressed = true;
+
+        try {
+            return $callback();
+        } finally {
+            self::$suppressed = $previous;
+        }
+    }
+
     public function record(Model $model, SyncChangeOperation $operation): ?SyncChange
     {
+        if (self::$suppressed) {
+            return null;
+        }
+
         $tenantId = $this->tenantId ?? $this->tenantIdFor($model);
 
         if ($tenantId === null) {

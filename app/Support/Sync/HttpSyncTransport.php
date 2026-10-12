@@ -40,4 +40,43 @@ final class HttpSyncTransport implements SyncTransport
 
         return $results;
     }
+
+    /**
+     * `GET {server}/api/v1/sync/pull?cursor=&limit=` (§18, §11.3 langkah 9).
+     *
+     * Kursor hanya bergerak bila halaman ini benar-benar diterima; kegagalan
+     * koneksi/timeout/5xx melempar `SyncTransportException` sehingga perangkat
+     * harus mencoba lagi dari kursor lama (§11.3 "Pengiriman ulang setelah
+     * timeout harus aman").
+     */
+    public function pull(string $token, ?string $cursor = null, int $limit = 100): SyncChangeBatch
+    {
+        $base = rtrim($this->baseUrl ?? (string) config('pos.sync.server_url'), '/');
+        $timeout = (int) config('pos.sync.request_timeout', 10);
+
+        try {
+            $response = Http::withToken($token)
+                ->acceptJson()
+                ->timeout($timeout)
+                ->get($base.'/api/v1/sync/pull', array_filter([
+                    'cursor' => $cursor,
+                    'limit' => $limit,
+                ], static fn ($value) => $value !== null));
+        } catch (ConnectionException $e) {
+            throw new SyncTransportException('Koneksi ke server gagal: '.$e->getMessage(), previous: $e);
+        }
+
+        if ($response->failed()) {
+            throw new SyncTransportException('Server gagal memproses permintaan (HTTP '.$response->status().').');
+        }
+
+        /** @var list<array<string, mixed>> $changes */
+        $changes = $response->json('changes', []);
+
+        return new SyncChangeBatch(
+            cursor: $response->json('cursor'),
+            changes: $changes,
+            hasMore: (bool) $response->json('has_more', false),
+        );
+    }
 }

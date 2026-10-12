@@ -3,6 +3,7 @@
 namespace Tests\Feature\Sync;
 
 use App\Exceptions\Sync\SyncTransportException;
+use App\Support\Sync\SyncChangeBatch;
 use App\Support\Sync\SyncTransport;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
@@ -19,6 +20,8 @@ use Illuminate\Http\Request;
 final class LoopbackSyncTransport implements SyncTransport
 {
     public int $attempts = 0;
+
+    public int $pullAttempts = 0;
 
     /** @var list<list<array<string, mixed>>> */
     public array $calls = [];
@@ -64,5 +67,43 @@ final class LoopbackSyncTransport implements SyncTransport
         $decoded = json_decode((string) $response->getContent(), true);
 
         return $decoded['results'];
+    }
+
+    /**
+     * Tarik perubahan lewat endpoint nyata `/api/v1/sync/pull` (§11.3
+     * langkah 9) sehingga uji menembus transport, autentikasi perangkat, dan
+     * sumber kursor sekaligus.
+     */
+    public function pull(string $token, ?string $cursor = null, int $limit = 100): SyncChangeBatch
+    {
+        $this->pullAttempts++;
+
+        if ($this->failuresRemaining > 0) {
+            $this->failuresRemaining--;
+
+            throw new SyncTransportException($this->failureMessage);
+        }
+
+        $request = Request::create('/api/v1/sync/pull', 'GET', array_filter([
+            'cursor' => $cursor,
+            'limit' => $limit,
+        ], static fn ($value) => $value !== null));
+        $request->headers->set('Authorization', 'Bearer '.$token);
+        $request->headers->set('Accept', 'application/json');
+
+        $response = app(Kernel::class)->handle($request);
+
+        if ($response->getStatusCode() >= 400) {
+            throw new SyncTransportException('Server menolak permintaan (HTTP '.$response->getStatusCode().').');
+        }
+
+        /** @var array{cursor?: string|null, changes?: list<array<string, mixed>>, has_more?: bool} $decoded */
+        $decoded = json_decode((string) $response->getContent(), true);
+
+        return new SyncChangeBatch(
+            cursor: $decoded['cursor'] ?? null,
+            changes: $decoded['changes'] ?? [],
+            hasMore: (bool) ($decoded['has_more'] ?? false),
+        );
     }
 }
