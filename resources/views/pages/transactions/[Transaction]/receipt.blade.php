@@ -162,6 +162,18 @@ mount(function (Transaction $transaction) {
 
     @volt
     <div class="receipt">
+        @if ($transaction->isVoided())
+            {{-- §17.4: struk transaksi batal wajib jelas — tidak boleh tampak seperti penjualan sah. --}}
+            <div class="text-center bold"
+                style="border: 2px solid #000; padding: 6px; margin-bottom: 10px;">
+                <div style="font-size: 16px;">*** DIBATALKAN ***</div>
+                <div>Alasan: {{ $transaction->void_reason ?: '-' }}</div>
+                @if ($transaction->voided_at)
+                    <div>{{ $transaction->voided_at->format('d/m/Y H:i') }}</div>
+                @endif
+            </div>
+        @endif
+
         <div class="header text-center">
             <div class="store-name">{{ $setting->store_name }}</div>
             <div>{{ $setting->store_address }}</div>

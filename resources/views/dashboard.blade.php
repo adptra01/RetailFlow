@@ -9,16 +9,23 @@ use Illuminate\Support\Number;
 use function Livewire\Volt\computed;
 
 $revenueToday = computed(function () {
-    return Transaction::whereDate('created_at', today())->sum('total_amount');
+    // §17.4: transaksi batal (void) tidak dihitung sebagai omzet.
+    return Transaction::whereDate('created_at', today())
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
+        ->sum('total_amount');
 });
 
 $transactionsToday = computed(function () {
-    return Transaction::whereDate('created_at', today())->count();
+    return Transaction::whereDate('created_at', today())
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
+        ->count();
 });
 
 $lowStockCount = computed(function () {
     return Product::where('is_unlimited_stock', false)->where('stock', '>', 0)
-        ->where(function ($q) { $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5); })
+        ->where(function ($q) {
+            $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5);
+        })
         ->count();
 });
 
@@ -28,12 +35,13 @@ $salesTrendData = computed(function () {
         $date = today()->subDays($i);
         $days->put($date->format('Y-m-d'), [
             'label' => $date->format('d M'),
-            'total' => 0
+            'total' => 0,
         ]);
     }
 
     $sales = Transaction::selectRaw('DATE(created_at) as date, SUM(total_amount) as total')
         ->whereDate('created_at', '>=', today()->subDays(6))
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
         ->groupBy('date')
         ->get();
 
@@ -41,7 +49,7 @@ $salesTrendData = computed(function () {
         if ($days->has($sale->date)) {
             $days->put($sale->date, [
                 'label' => Carbon::parse($sale->date)->format('d M'),
-                'total' => (float) $sale->total
+                'total' => (float) $sale->total,
             ]);
         }
     }
@@ -58,6 +66,7 @@ $recentTransactions = computed(function () {
 
 $topSellingProducts = computed(function () {
     return TransactionItem::selectRaw('product_id, SUM(quantity) as total_qty')
+        ->whereHas('transaction', fn ($q) => $q->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID))
         ->groupBy('product_id')
         ->orderByDesc('total_qty')
         ->limit(5)
@@ -158,8 +167,12 @@ $topSellingProducts = computed(function () {
                                     </div>
                                 </div>
                                 <div class="text-right">
-                                    <p class="text-sm font-bold">{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</p>
-                                    <p class="text-xs text-emerald-600 dark:text-emerald-400">{{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }}</p>
+                                    <p @class(['text-sm font-bold', 'line-through text-zinc-400' => $transaction->isVoided()])>{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</p>
+                                    @if ($transaction->isVoided())
+                                        <p class="text-xs text-red-600 dark:text-red-400">{{ __('Dibatalkan') }}</p>
+                                    @else
+                                        <p class="text-xs text-emerald-600 dark:text-emerald-400">{{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }}</p>
+                                    @endif
                                 </div>
                             </div>
                         @empty

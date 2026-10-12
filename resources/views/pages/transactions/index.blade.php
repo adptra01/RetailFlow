@@ -1,8 +1,10 @@
 <?php
 
+use App\Actions\Sales\VoidSale;
+use App\Exceptions\Auth\ActionForbidden;
+use App\Exceptions\Sales\VoidNotAllowed;
 use App\Models\Transaction;
 use Flux\Flux;
-use Illuminate\Support\Str;
 use Livewire\WithPagination;
 
 use function Laravel\Folio\middleware;
@@ -26,8 +28,9 @@ state([
 
 state([
     'showDetailModal' => false,
-    'showDeleteModal' => false,
-    'deletingTransactionId' => null,
+    'showVoidModal' => false,
+    'voidingTransactionId' => null,
+    'voidReason' => '',
     'viewingTransactionId' => null,
 ]);
 
@@ -44,14 +47,14 @@ $transactions = computed(function () {
     return Transaction::query()
         ->withCount('items')
         ->where(function ($q) {
-            $q->where('invoice_number', 'like', '%' . $this->search . '%')->orWhere('customer_name', 'like', '%' . $this->search . '%');
+            $q->where('invoice_number', 'like', '%'.$this->search.'%')->orWhere('customer_name', 'like', '%'.$this->search.'%');
         })
         ->orderBy($this->sortBy, $this->sortDirection)
         ->paginate(10);
 });
 
 $viewTransaction = computed(function () {
-    if (!$this->viewingTransactionId) {
+    if (! $this->viewingTransactionId) {
         return null;
     }
 
@@ -63,20 +66,51 @@ $viewDetail = function ($id) {
     $this->showDetailModal = true;
 };
 
-$confirmDelete = function ($id) {
-    $this->deletingTransactionId = $id;
-    $this->showDeleteModal = true;
+/**
+ * §17.4 "Retur dan void": transaksi selesai tidak dihapus permanen.
+ * Pembatalan terkontrol menggantikan hapus: alasan wajib, izin wajib, stok
+ * dikembalikan sesuai kebijakan, dan jejaknya terekam audit.
+ */
+$confirmVoid = function ($id) {
+    $this->voidingTransactionId = $id;
+    $this->voidReason = '';
+    $this->showVoidModal = true;
 };
 
-$delete = function () {
-    $transaction = Transaction::findOrFail($this->deletingTransactionId);
-    $transaction->items()->delete();
-    $transaction->delete();
+$voidTransaction = function () {
+    $transaction = Transaction::find($this->voidingTransactionId);
 
-    $this->deletingTransactionId = null;
-    $this->showDeleteModal = false;
+    if (! $transaction) {
+        Flux::toast(variant: 'error', text: __('Transaksi tidak ditemukan.'));
 
-    Flux::toast(variant: 'success', text: __('Transaction deleted.'));
+        return;
+    }
+
+    $actor = auth()->user();
+
+    try {
+        $result = app(VoidSale::class)->handle([
+            'transaction_id' => $transaction->id,
+            'user_id' => $actor?->id,
+            'tenant_id' => $actor?->tenant_id,
+            'reason' => $this->voidReason,
+        ], $actor);
+    } catch (ActionForbidden|VoidNotAllowed $e) {
+        Flux::toast(variant: 'error', text: $e->getMessage());
+
+        return;
+    }
+
+    $this->voidingTransactionId = null;
+    $this->voidReason = '';
+    $this->showVoidModal = false;
+
+    Flux::toast(
+        variant: 'success',
+        text: $result['already_void']
+            ? __('Transaksi sudah dibatalkan sebelumnya.')
+            : __('Transaksi dibatalkan.'),
+    );
 };
 
 /**
@@ -163,7 +197,8 @@ $methodColor = function (string $method): string {
                             <flux:table.row :key="$transaction->id">
                                 <flux:table.cell>
                                     <div class="flex flex-col">
-                                        <span class="font-medium">{{ $transaction->invoice_number }}</span>
+                                        <span
+                                            @class(['font-medium', 'line-through text-zinc-400' => $transaction->isVoided()])>{{ $transaction->invoice_number }}</span>
                                         <span
                                             class="text-xs text-zinc-500">{{ $transaction->created_at->format('d M Y, H:i') }}</span>
                                     </div>
@@ -180,14 +215,21 @@ $methodColor = function (string $method): string {
                                 </flux:table.cell>
 
                                 <flux:table.cell variant="strong">
-                                    {{ Number::currency($transaction->total_amount, 'IDR', 'id') }}
+                                    <span
+                                        @class(['line-through text-zinc-400' => $transaction->isVoided()])>{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</span>
                                 </flux:table.cell>
 
                                 <flux:table.cell>
-                                    <flux:badge size="sm"
-                                        :color="$this->methodColor($transaction->payment_method)" inset="top bottom">
-                                        {{ $this->methodLabel($transaction->payment_method) }}
-                                    </flux:badge>
+                                    @if ($transaction->isVoided())
+                                        <flux:badge size="sm" color="red" inset="top bottom">
+                                            {{ __('Dibatalkan') }}
+                                        </flux:badge>
+                                    @else
+                                        <flux:badge size="sm"
+                                            :color="$this->methodColor($transaction->payment_method)" inset="top bottom">
+                                            {{ $this->methodLabel($transaction->payment_method) }}
+                                        </flux:badge>
+                                    @endif
                                 </flux:table.cell>
 
                                 <flux:table.cell>
@@ -198,22 +240,26 @@ $methodColor = function (string $method): string {
                                             <flux:menu.item icon="eye" wire:click="viewDetail({{ $transaction->id }})">
                                                 {{ __('View') }}
                                             </flux:menu.item>
-                                            <flux:menu.item icon="pencil-square"
-                                                href="{{ route('transactions.edit', ['transaction' => $transaction->id]) }}"
-                                                >
-                                                {{ __('Edit') }}
-                                            </flux:menu.item>
+                                            @unless ($transaction->isVoided())
+                                                <flux:menu.item icon="pencil-square"
+                                                    href="{{ route('transactions.edit', ['transaction' => $transaction->id]) }}">
+                                                    {{ __('Edit') }}
+                                                </flux:menu.item>
+                                            @endunless
                                             <flux:menu.item icon="printer"
                                                 href="/transactions/{{ $transaction->id }}/receipt"
-                                                target="_blank"
-                                                >
+                                                target="_blank">
                                                 {{ __('Print') }}
                                             </flux:menu.item>
-                                            <flux:menu.separator />
-                                            <flux:menu.item icon="trash" variant="danger"
-                                                wire:click="confirmDelete({{ $transaction->id }})">
-                                                {{ __('Delete') }}
-                                            </flux:menu.item>
+                                            @unless ($transaction->isVoided())
+                                                @can('transaction.void')
+                                                    <flux:menu.separator />
+                                                    <flux:menu.item icon="x-circle" variant="danger"
+                                                        wire:click="confirmVoid({{ $transaction->id }})">
+                                                        {{ __('Batalkan') }}
+                                                    </flux:menu.item>
+                                                @endcan
+                                            @endunless
                                         </flux:menu>
                                     </flux:dropdown>
                                 </flux:table.cell>
@@ -290,6 +336,20 @@ $methodColor = function (string $method): string {
                             </div>
                         </div>
 
+                        @if ($this->viewTransaction->isVoided())
+                            <div class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900 dark:bg-red-950/40">
+                                <p class="font-medium text-red-700 dark:text-red-300">
+                                    {{ __('Dibatalkan') }}
+                                    @if ($this->viewTransaction->voided_at)
+                                        · {{ $this->viewTransaction->voided_at->format('d M Y, H:i') }}
+                                    @endif
+                                </p>
+                                <p class="mt-1 text-red-700 dark:text-red-300">
+                                    {{ $this->viewTransaction->void_reason ?: '-' }}
+                                </p>
+                            </div>
+                        @endif
+
                         @if ($this->viewTransaction->notes)
                             <div>
                                 <span class="text-sm text-zinc-500">{{ __('Notes') }}</span>
@@ -298,10 +358,12 @@ $methodColor = function (string $method): string {
                         @endif
 
                         <div class="flex justify-end gap-2">
-                            <flux:button variant="filled"
-                                href="{{ route('transactions.edit', ['transaction' => $this->viewTransaction->id]) }}" >
-                                {{ __('Edit Transaction') }}
-                            </flux:button>
+                            @unless ($this->viewTransaction->isVoided())
+                                <flux:button variant="filled"
+                                    href="{{ route('transactions.edit', ['transaction' => $this->viewTransaction->id]) }}">
+                                    {{ __('Edit Transaction') }}
+                                </flux:button>
+                            @endunless
                             <flux:button variant="filled"
                                 href="/transactions/{{ $this->viewTransaction->id }}/receipt"
                                 target="_blank"
@@ -316,21 +378,34 @@ $methodColor = function (string $method): string {
                 @endif
             </flux:modal>
 
-            {{-- Delete Confirmation Modal --}}
-            <flux:modal wire:model.self="showDeleteModal" class="max-w-lg">
-                <form wire:submit="delete" class="space-y-6">
+            {{-- Void Confirmation Modal (§17.4) --}}
+            <flux:modal wire:model.self="showVoidModal" class="max-w-lg">
+                <form wire:submit="voidTransaction" class="space-y-6">
                     <div>
-                        <flux:heading size="lg">{{ __('Delete Transaction') }}</flux:heading>
+                        <flux:heading size="lg">{{ __('Batalkan Transaksi') }}</flux:heading>
                         <flux:subheading>
-                            {{ __('Are you sure you want to delete this transaction? All items in this transaction will also be deleted. This action cannot be undone.') }}
+                            {{ __('Transaksi tidak dihapus, tetapi ditandai batal. Stok dikembalikan sesuai kebijakan dan tindakan ini tercatat di jejak audit bersama alasannya.') }}
                         </flux:subheading>
                     </div>
+
+                    <flux:textarea wire:model="voidReason" :label="__('Alasan pembatalan')"
+                        placeholder="{{ __('Contoh: salah input item, pelanggan membatalkan pesanan...') }}"
+                        rows="3" required />
+
+                    <flux:callout variant="warning" icon="exclamation-triangle">
+                        <flux:callout.heading>{{ __('Perhatian') }}</flux:callout.heading>
+                        <flux:callout.text>
+                            {{ __('Transaksi yang sudah dibatalkan tidak dapat diaktifkan kembali. Koreksi dilakukan dengan membuat transaksi baru.') }}
+                        </flux:callout.text>
+                    </flux:callout>
 
                     <div class="flex justify-end gap-2">
                         <flux:modal.close>
                             <flux:button variant="filled">{{ __('Cancel') }}</flux:button>
                         </flux:modal.close>
-                        <flux:button variant="danger" type="submit">{{ __('Delete') }}</flux:button>
+                        <flux:button variant="danger" type="submit" :disabled="trim($voidReason) === ''">
+                            {{ __('Batalkan Transaksi') }}
+                        </flux:button>
                     </div>
                 </form>
             </flux:modal>

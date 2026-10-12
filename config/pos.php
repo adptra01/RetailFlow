@@ -33,6 +33,17 @@ return [
         'mode' => env('POS_TENANCY_MODE', 'single'),
     ],
 
+    'sales' => [
+        // §17.4 "Retur dan void": "Pengembalian stok hanya dilakukan sesuai
+        // kebijakan retur."
+        //
+        // true (default) = pembatalan (void) mengembalikan stok lewat mutasi
+        //   balik (`sale_void`) sebesar yang pernah dikurangi saat penjualan;
+        // false = pembatalan hanya menandai transaksi batal, stok dibiarkan
+        //   (mis. barang sudah diserahkan/rusak dan tidak kembali ke rak).
+        'restore_stock_on_void' => (bool) env('POS_RESTORE_STOCK_ON_VOID', true),
+    ],
+
     'inventory' => [
         // §11.4 "Konflik stok": "Owner dapat mengaktifkan kebijakan stok
         // negatif atau membatasi penjualan berdasarkan kebutuhan bisnis."

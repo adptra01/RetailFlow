@@ -17,6 +17,13 @@ class Transaction extends Model
     /** @use HasFactory<TransactionFactory> */
     use BelongsToTenant, HasFactory, HasSyncIdentity, JournalSyncChanges, SoftDeletes;
 
+    /** Status pembayaran yang sah (kolom `payment_status`) — §17.4, FR-04. */
+    public const PAYMENT_STATUS_PAID = 'paid';
+
+    public const PAYMENT_STATUS_CREDIT = 'credit';
+
+    public const PAYMENT_STATUS_VOID = 'void';
+
     protected $attributes = ['version' => 1];
 
     protected $fillable = [
@@ -26,6 +33,8 @@ class Transaction extends Model
         'subtotal_minor', 'discount_minor', 'total_minor', 'paid_minor', 'change_minor',
         // FR-06: snapshot promosi (diterima dari aksi domain CreateSale).
         'promotion_id', 'promotion_name', 'promotion_discount_minor',
+        // §17.4: jejak pembatalan terkontrol (diterima dari aksi domain VoidSale).
+        'voided_at', 'voided_by', 'void_reason', 'stock_restored',
     ];
 
     protected function casts(): array
@@ -41,8 +50,25 @@ class Transaction extends Model
             'change_minor' => 'integer',
             'promotion_id' => 'integer',
             'promotion_discount_minor' => 'integer',
+            'voided_at' => 'datetime',
+            'voided_by' => 'integer',
+            'stock_restored' => 'boolean',
             'version' => 'integer',
         ];
+    }
+
+    /**
+     * §17.4: transaksi yang dibatalkan tidak dihapus, hanya ditandai. Laporan
+     * dan kasir harus menyaringnya lewat helper ini, bukan mencocokkan string.
+     */
+    public function isVoided(): bool
+    {
+        return $this->payment_status === self::PAYMENT_STATUS_VOID;
+    }
+
+    public function voidedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'voided_by');
     }
 
     public function user(): BelongsTo

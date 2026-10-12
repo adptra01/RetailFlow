@@ -115,7 +115,21 @@ $removeFromCart = function ($index) {
     array_splice($this->cart, $index, 1);
 };
 
+/**
+ * §17.4: transaksi yang sudah dibatalkan (void) bersifat final — koreksinya
+ * adalah transaksi baru, bukan penyuntingan ulang catatan lama.
+ */
+$isVoided = function () {
+    return (bool) $this->transaction?->isVoided();
+};
+
 $confirmSave = function () {
+    if ($this->isVoided()) {
+        Flux::toast(variant: 'error', text: __('Transaksi yang sudah dibatalkan tidak dapat diedit.'));
+
+        return;
+    }
+
     if (empty($this->cart)) {
         Flux::toast(variant: 'error', text: __('Please add at least one product.'));
 
@@ -138,6 +152,12 @@ $confirmSave = function () {
 };
 
 $save = function () {
+    if ($this->isVoided()) {
+        Flux::toast(variant: 'error', text: __('Transaksi yang sudah dibatalkan tidak dapat diedit.'));
+
+        return;
+    }
+
     $this->transaction->update([
         'customer' => $this->customer,
         'total_amount' => $this->totalAmount,
@@ -199,6 +219,31 @@ $paymentMethods = computed(function () {
             <flux:subheading>{{ __('Update transaction #:invoice.', ['invoice' => $transaction->invoice_number]) }}
             </flux:subheading>
         </div>
+
+        @if ($this->isVoided())
+            <div class="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <flux:heading size="sm" class="text-red-700 dark:text-red-300">
+                            {{ __('Transaksi ini sudah dibatalkan (void).') }}
+                        </flux:heading>
+                        <flux:text class="mt-1 text-sm text-red-700 dark:text-red-300">
+                            {{ __('Alasan: :reason', ['reason' => $transaction->void_reason ?? '—']) }}
+                            @if ($transaction->voided_at)
+                                · {{ $transaction->voided_at->format('d/m/Y H:i') }}
+                            @endif
+                        </flux:text>
+                        <flux:text class="mt-1 text-sm text-red-700 dark:text-red-300">
+                            {{ __('Catatan lama bersifat final; koreksi dilakukan dengan membuat transaksi baru.') }}
+                        </flux:text>
+                    </div>
+
+                    <flux:button size="sm" variant="filled" icon="arrow-left" :href="route('transactions.index')" wire:navigate>
+                        {{ __('Kembali') }}
+                    </flux:button>
+                </div>
+            </div>
+        @endif
 
         <form wire:submit="confirmSave">
             <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -362,8 +407,8 @@ $paymentMethods = computed(function () {
                                 class="flex-1 justify-center">
                                 {{ __('Cancel') }}
                             </flux:button>
-                            <flux:button type="submit" variant="primary" :disabled="empty($this->cart)"
-                                class="flex-1 justify-center">
+                            <flux:button type="submit" variant="primary"
+                                :disabled="empty($this->cart) || $this->isVoided()" class="flex-1 justify-center">
                                 {{ __('Review & Update') }}
                             </flux:button>
                         </div>

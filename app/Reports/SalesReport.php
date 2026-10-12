@@ -85,9 +85,20 @@ class SalesReport
         $diskonTxn = 0;
         $diskonCount = 0;
         $creditCount = 0;
+        $voidCount = 0;
+        $voidMinor = 0;
         $methods = [];
 
         foreach ($transactions as $txn) {
+            // §17.4: transaksi yang dibatalkan (void) tetap tampil di riwayat
+            // tetapi TIDAK boleh dihitung sebagai omzet/penerimaan/piutang.
+            if ($txn->isVoided()) {
+                $voidCount++;
+                $voidMinor += $txn->total_minor;
+
+                continue;
+            }
+
             $omzet += $txn->total_minor;
             $penerimaan += $txn->paid_minor;
             $diskonTxn += $txn->discount_minor;
@@ -113,11 +124,15 @@ class SalesReport
             $methods[$method]['penerimaan_minor'] += $txn->paid_minor;
         }
 
+        $activeCount = $transactions->reject(fn (Transaction $txn) => $txn->isVoided())->count();
+
         $itemDiscount = (int) $this->tenantQuery(TransactionItem::class)
-            ->whereHas('transaction', fn (Builder $q) => $q->whereBetween('created_at', [$start, $end]))
+            ->whereHas('transaction', fn (Builder $q) => $q
+                ->whereBetween('created_at', [$start, $end])
+                ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID))
             ->sum('discount_minor');
 
-        $count = $transactions->count();
+        $count = $activeCount;
 
         // FR-12: akses laporan keuangan dicatat dengan aktor + periode —
         // hanya bila aktor nyata (CLI/otomasi tanpa aktor tidak dicatat).
@@ -138,6 +153,8 @@ class SalesReport
             'transaksi_count' => $count,
             'transaksi_kredit_count' => $creditCount,
             'transaksi_berdiskon_count' => $diskonCount,
+            'dibatalkan_count' => $voidCount,
+            'dibatalkan_minor' => $voidMinor,
             'rata_rata_transaksi_minor' => $count > 0 ? (int) round($omzet / $count) : 0,
             'diskon_minor' => $diskonTxn + $itemDiscount,
             'metode_pembayaran' => array_values($methods),
@@ -155,6 +172,10 @@ class SalesReport
                     'change_minor' => $txn->change_minor,
                     'discount_minor' => $txn->discount_minor,
                     'created_at' => $txn->created_at?->toDateTimeString(),
+                    // §17.4: pembatalan tampil di riwayat beserta alasannya —
+                    // riwayat tidak boleh menyembunyikan transaksi yang dibatalkan.
+                    'voided_at' => $txn->voided_at?->toDateTimeString(),
+                    'void_reason' => $txn->void_reason,
                 ];
             })->values()->all(),
         ];
@@ -173,6 +194,8 @@ class SalesReport
             'piutang_baru_minor' => 'Piutang yang baru terbentuk pada periode: Σ (total_minor − paid_minor) transaksi kredit.',
             'diskon_minor' => 'Total diskon yang diberikan pada periode: Σ diskon transaksi + Σ diskon item.',
             'rata_rata_transaksi_minor' => 'Omzet dibagi jumlah transaksi pada periode.',
+            'dibatalkan_count' => 'Jumlah transaksi yang dibatalkan (void) pada periode. Transaksi batal tidak dihitung pada omzet, penerimaan, piutang, maupun produk terlaris (§17.4).',
+            'dibatalkan_minor' => 'Nilai transaksi yang dibatalkan pada periode (Σ total_minor transaksi batal) — untuk jejak, bukan omzet.',
         ];
     }
 
@@ -182,8 +205,10 @@ class SalesReport
     private function topProducts(string $start, string $end, int $limit): array
     {
         $rows = $this->tenantQuery(TransactionItem::class)
+            ->whereHas('transaction', fn (Builder $q) => $q
+                ->whereBetween('created_at', [$start, $end])
+                ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID))
             ->select('product_id', DB::raw('SUM(quantity) as quantity'), DB::raw('SUM(subtotal_minor) as omzet_minor'))
-            ->whereHas('transaction', fn (Builder $q) => $q->whereBetween('created_at', [$start, $end]))
             ->groupBy('product_id')
             ->orderByDesc('quantity')
             ->limit($limit)

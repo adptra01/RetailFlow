@@ -1,3 +1,49 @@
+# Rebuild POS Universal — Fase 5: Pembatalan Transaksi Terkontrol / Void (§17.4, Increment 43) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§5.1 MVP #10 "Retur & void"; §17.4 "Retur dan void": "Transaksi selesai tidak dihapus permanen", "Pembatalan dan retur harus memerlukan izin dan alasan", "Pengembalian stok hanya dilakukan sesuai kebijakan retur"; FR-12 audit; FR-07 piutang; FR-08 stok).
+
+## Perubahan
+
+### Migrasi
+- **`2026_10_13_000001_add_void_fields_to_transactions_table.php`** — kolom aditif & nullable pada `transactions`: `voided_at`, `voided_by` (FK `users`, nullOnDelete), `void_reason` (500), `stock_restored` (bool, default false), plus indeks `payment_status` (laporan kini menyaring transaksi batal pada setiap periode). Sebelumnya pembatalan dilakukan dengan **hapus permanen**: `items()->delete()` + soft-delete transaksi, tanpa izin, alasan, pengembalian stok, maupun jejak audit — melanggar §17.4.
+
+### Aksi Domain
+- **`Sales\VoidSale`** (baru) — satu-satunya jalur pembatalan, atomik (`DB::transaction` + `lockForUpdate`):
+  - **tidak menghapus**: transaksi ditandai `payment_status = 'void'` (konstanta `Transaction::PAYMENT_STATUS_VOID`) dan itemnya tetap utuh;
+  - **alasan wajib** (`VoidNotAllowed::reasonRequired`) dan **izin wajib** (`transaction.void` lewat `ActionAuthorizer`, FR-12);
+  - **idempoten**: pemanggilan ulang mengembalikan `already_void: true` tanpa mengembalikan stok lagi dan tanpa mutasi/audit ganda;
+  - **mutasi balik dari ledger**, bukan hitung ulang item: kueri `stock_movements` `reference_type='sale'`/`reference_id` → tulis mutasi `sale_void` dengan `quantity_change` positif dan `before_stock`/`after_stock` yang benar, serta `Product::saveQuietly()` (pola `CreateSale`, agar observer tidak menggandakan mutasi). Dapat dimatikan per panggilan (`restore_stock`) atau lewat kebijakan;
+  - **piutang dijaga (FR-07)**: piutang tanpa pembayaran → `status = 'void'`, `remaining_minor = 0`, saldo pelanggan dikoreksi kembali (`decrement('balance', …)`); bila sudah ada `receivable_payments`, void **ditolak** (`VoidNotAllowed::receivableHasPayments`) supaya pembayaran tidak tersembunyi;
+  - **audit** `AuditAction::SaleVoided` (`sale.voided`) dengan aktor, perangkat, alasan, status pembayaran sebelumnya, dan ringkasan perubahan (FR-12).
+- **`App\Exceptions\Sales\VoidNotAllowed`** (baru) — pelanggaran domain void (alasan kosong, transaksi tak ditemukan, piutang sudah dibayar) dengan `render()` 422.
+
+### Model, Enum & Konfigurasi
+- **`Transaction`** — `voided_at`/`voided_by`/`void_reason`/`stock_restored` masuk `$fillable` + cast (`datetime`/`integer`/`boolean`), konstanta status pembayaran, helper `isVoided()`, relasi `voidedBy()`.
+- **`AuditAction::SaleVoided`** = `'sale.voided'`.
+- **`config/pos.php`** — `sales.restore_stock_on_void` (default `true`, `POS_RESTORE_STOCK_ON_VOID`): §17.4 "Pengembalian stok hanya dilakukan sesuai kebijakan retur".
+
+### Laporan (void dikecualikan)
+- **`Reports\SalesReport`** — omzet, penerimaan, piutang baru, diskon item, dan produk terlaris tidak lagi menghitung transaksi batal; ditambahkan metrik `dibatalkan_count` dan `dibatalkan_minor` beserta definisinya (FR-09), serta `voided_at`/`void_reason` pada `riwayat` supaya pembatalan tetap terlihat.
+- **`/dashboard`** — omzet hari ini, jumlah transaksi hari ini, tren 7 hari, dan produk terlaris menyaring transaksi batal; daftar "Transaksi Terbaru" menandainya **Dibatalkan** dengan nominal dicoret.
+- **`/reports`** — ringkasan, tren harian, komposisi metode, produk terlaris, kategori, dan laba menyaring transaksi batal; kartu **"Transaksi Dibatalkan"** ditambahkan sebagai laporan terpisah (tidak disembunyikan).
+- **`GenerateCashFlowReport`** & **`GenerateMarginHistoryReport`** sudah menyaring batal; tak perlu diubah.
+
+### UI (Folio/Volt)
+- **`/transactions`** — aksi hapus permanen **diganti** tombol **"Batalkan"** (menu `x-circle`, hanya pemegang `transaction.void`, hanya untuk transaksi aktif) dengan modal alasan wajib + peringatan bahwa transaksi batal tidak dapat diaktifkan kembali; baris batal bergaris coret dengan badge merah **Dibatalkan**; aksi Edit disembunyikan untuk transaksi batal; modal detail menampilkan waktu & alasan pembatalan. `VoidNotAllowed`/`ActionForbidden` ditampilkan sebagai toast, bukan error 500.
+- **`/transactions/[Transaction]`** — transaksi batal bersifat final: `confirmSave`/`save` ditolak, tombol "Review & Update" dinonaktifkan, dan banner merah menampilkan alasan + waktu pembatalan.
+- **`/transactions/[Transaction]/receipt`** — struk transaksi batal dicetak dengan blok **\*\*\* DIBATALKAN \*\*\*** (alasan + waktu) agar tidak tampak seperti penjualan sah.
+
+### Pengujian
+- **`tests/Feature/Sales/VoidSaleTest.php`** (9) — void menandai + mengembalikan stok lewat mutasi `sale_void` + audit lengkap; item & baris tidak terhapus; alasan wajib; aktor tanpa izin ditolak (`ActionForbidden`); idempoten (stok/Mutasi/audit tidak ganda); kebijakan `restore_stock_on_void=false` tidak menyentuh stok; flag eksplisit mengalahkan kebijakan; transaksi tak dikenal ditolak; penjualan kredit belum dibayar → piutang & saldo pelanggan dikoreksi; piutang **sudah** dibayar → void ditolak dan tidak ada perubahan; laporan keuangan bersih dari transaksi batal (`dibatalkan_count`/`dibatalkan_minor`/`riwayat`).
+- **`tests/Feature/Sales/VoidSaleUiTest.php`** (4) — void dari daftar dengan alasan; tanpa alasan tidak mengubah apa pun; aktor tanpa izin tidak ditawari aksi (dan pemanggilan langsung tetap ditolak); transaksi batal ditandai di daftar dan tidak dapat disimpan dari halaman edit.
+
+## Status suite
+- **710 passed / 0 failed / 4 skipped** (2353 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint 14 file, 4 style issues.
+- Migrasi `2026_10_13_000001` dijalankan di dev.
+
+---
+
 # Rebuild POS Universal — Fase 5: Pembayaran Campuran / Split Payment (FR-05, Increment 42) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

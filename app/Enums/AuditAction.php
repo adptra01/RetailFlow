@@ -15,6 +15,9 @@ enum AuditAction: string
     // Penjualan (CreateSale) — sudah terekam sejak Fase 2.
     case SaleCreated = 'sale.created';
 
+    // Pembatalan penjualan terkontrol (VoidSale, izin `transaction.void`, §17.4).
+    case SaleVoided = 'sale.voided';
+
     // Pembayaran piutang (RecordReceivablePayment).
     case ReceivablePayment = 'receivable.payment';
 

@@ -28,24 +28,34 @@ updated(['from_date', 'to_date'], function () {
 });
 
 $summary = computed(function () {
-    $query = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+    // §17.4: transaksi batal (void) tidak dihitung sebagai penjualan.
+    $query = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
 
     $totalRevenue = (float) $query->sum('total_amount');
     $totalTransactions = $query->count();
     $totalItems = TransactionItem::whereHas('transaction', function ($q) {
-        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+            ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
     })->sum('quantity');
+
+    // §17.4: pembatalan dilaporkan terpisah, bukan disembunyikan.
+    $cancelledTransactions = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+        ->where('payment_status', Transaction::PAYMENT_STATUS_VOID)
+        ->count();
 
     return [
         'total_revenue' => $totalRevenue,
         'total_transactions' => $totalTransactions,
         'average_order' => $totalTransactions > 0 ? round($totalRevenue / $totalTransactions, 2) : 0,
         'total_items_sold' => $totalItems,
+        'cancelled_transactions' => $cancelledTransactions,
     ];
 });
 
 $dailyRevenueData = computed(function () {
     $sales = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
         ->selectRaw('DATE(created_at) as date, SUM(total_amount) as revenue')
         ->groupBy('date')
         ->orderBy('date')
@@ -68,6 +78,7 @@ $paymentMethodData = computed(function () {
     ];
 
     $rows = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+        ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
         ->selectRaw('payment_method, SUM(total_amount) as total')
         ->groupBy('payment_method')
         ->get();
@@ -81,7 +92,8 @@ $paymentMethodData = computed(function () {
 $topProductsData = computed(function () {
     $rows = TransactionItem::selectRaw('product_id, SUM(subtotal) as revenue')
         ->whereHas('transaction', function ($q) {
-            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+                ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
         })
         ->with('product:id,name')
         ->groupBy('product_id')
@@ -97,7 +109,8 @@ $topProductsData = computed(function () {
 
 $totalProfit = computed(function () {
     $items = TransactionItem::whereHas('transaction', function ($q) {
-        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+            ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
     })->with('product')->get();
 
     $revenue = $items->sum('subtotal');
@@ -135,7 +148,8 @@ $categoryData = computed(function () {
     $rows = TransactionItem::selectRaw('products.category_id, SUM(transaction_items.subtotal) as revenue')
         ->join('products', 'transaction_items.product_id', '=', 'products.id')
         ->whereHas('transaction', function ($q) {
-            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
+                ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
         })
         ->groupBy('products.category_id')
         ->orderByDesc('revenue')
@@ -203,6 +217,14 @@ $categoryData = computed(function () {
                 <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800">
                     <p class="text-sm text-zinc-500">{{ __('Items Sold') }}</p>
                     <p class="mt-1 text-2xl font-bold">{{ Number::format($this->summary['total_items_sold']) }}</p>
+                </div>
+
+                <div class="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
+                    <p class="text-sm text-red-600 dark:text-red-400">{{ __('Transaksi Dibatalkan') }}</p>
+                    <p class="mt-1 text-2xl font-bold text-red-700 dark:text-red-300">
+                        {{ Number::format($this->summary['cancelled_transactions']) }}</p>
+                    <p class="mt-1 text-xs text-red-600 dark:text-red-400">
+                        {{ __('Tidak dihitung pada omzet, penerimaan, atau produk terlaris.') }}</p>
                 </div>
             </div>
 
