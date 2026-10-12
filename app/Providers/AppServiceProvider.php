@@ -13,6 +13,7 @@ use App\Printing\NullReceiptPrinter;
 use App\Printing\ReceiptPrinter;
 use App\Support\Devices\DeviceContext;
 use App\Support\Sync\DatabaseSyncChangeFeed;
+use App\Support\Sync\Handlers\SaleReturnSyncHandler;
 use App\Support\Sync\Handlers\SaleSyncHandler;
 use App\Support\Sync\HttpSyncTransport;
 use App\Support\Sync\SyncChangeFeed;
@@ -66,6 +67,7 @@ class AppServiceProvider extends ServiceProvider
         // tipe entitas yang disinkronkan.
         $this->app->singleton(SyncOperationApplier::class, fn () => new SyncOperationApplier([
             new SaleSyncHandler,
+            new SaleReturnSyncHandler,
         ]));
     }
 

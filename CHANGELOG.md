@@ -1,3 +1,35 @@
+# Rebuild POS Universal — Fase 5: Retur Penjualan dari Perangkat (§11.1–§11.3, §17.1, §17.4, Increment 46) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§5.1 MVP #15 "Status offline/online dan antrean sinkronisasi"; §11.1 "Operasi lokal harus dapat diselesaikan tanpa menunggu server", "Sinkronisasi harus aman terhadap pengiriman ulang"; §11.2 struktur outbox; §11.3 langkah 4–7 & "urutan operasi"; §11.5 operasi lama tidak dibuang; §12 tenant dari perangkat; §17.1 identitas sinkronisasi; §17.4 retur; FR-08).
+
+## Latar
+Increment 45 selesai di sisi domain & web, tetapi menutup satu celah yang **dibuat oleh increment itu sendiri**: `CreateSalesReturn` sudah memasukkan operasi `sale_return`/`create` ke outbox perangkat (§11.1), sedangkan `SyncOperationApplier` hanya punya handler untuk entitas `sale`. Akibatnya retur yang dibuat di perangkat dikirim ke server lalu **selalu** berakhir `received` (deferred) — data tersimpan durable tetapi tidak pernah diterapkan. Padahal §17.4 menuntut retur berjalan juga saat perangkat offline, dan FR-08 adalah fitur inti, bukan pelengkap.
+
+Sekaligus ditemukan dua kekurangan pada payload Increment 45 yang membuat penerapan mustahil: payload tidak membawa `user_id` (audit & kepemilikan dokumen), dan baris dirujuk hanya lewat `transaction_item_id` — id yang **ditetapkan server**, sehingga perangkat yang belum pernah menariknya (langkah tarik §11.3 langkah 9–10 belum ada) tidak punya cara menyebut baris mana yang diretur.
+
+## Perubahan
+
+### Handler penerapan
+- **`Support\Sync\Handlers\SaleReturnSyncHandler`** (baru) — menerapkan operasi `sale_return`/`create` (§11.3 langkah 6), terdaftar di `SyncOperationApplier` (`AppServiceProvider`) bersama `SaleSyncHandler`:
+  - **validasi urutan** (§11.3 langkah 5): retur hanya sah bila penjualannya sudah ada di server — perangkat yang meretur penjualan yang belum terkirim ditolak dengan alasan jelas (dalam satu batch, urutan `local_sequence`/id inbox menjamin create diterapkan lebih dahulu);
+  - **identitas diadopsi** (§17.1): `operation_id` perangkat menjadi `client_request_id`, dan `entity_id` (uuid dokumen retur milik perangkat) diadopsi server — operasi lanjutan yang menunjuk retur itu tetap sah; `entity_id` yang bukan uuid ditolak;
+  - **tenant & perangkat selalu dari server** (§12), tidak dari payload;
+  - **penerapan ulang idempoten** (§11.1): dokumen dengan identitas itu sudah ada → `applied` tanpa efek kedua; `operation_id` unik di `sync_inbox` + status terminal + `client_request_id` pada `CreateSalesReturn` membuat **stok tidak dikembalikan dua kali**;
+  - **resolusi baris berlapis** — `transaction_item_uuid` → `transaction_item_id` → `product_id` (+ `product_unit_id`) dengan memilih baris yang sisanya paling banyak dan belum dipakai baris lain dalam payload yang sama; baris yang tak dapat dicocokkan ditolak, bukan diterapkan sebagian;
+  - pelanggaran domain (`ReturnNotAllowed`) → `rejected` dengan pesan domain; kegagalan lain → `rejected` (tidak melempar, sesuai kontrak `SyncOperationHandler`);
+  - operasi perangkat **tidak dipantulkan** kembali ke outbox server (`enqueue_for_sync: false`, §11.1).
+- **`Actions\Sales\CreateSalesReturn`** — payload outbox diperkaya: `user_id`, serta per baris `transaction_item_uuid` + `product_id` + `product_unit_id` + `reason` (id server tetap disertakan). Kunci `transaction_id`/`transaction_uuid` kini dipisah dari `uuid`, dan `uuid` dipakai sebagai **identitas dokumen retur** yang diadopsi server (`uuid` di luar `$fillable`, di-set sebelum simpan — konvensi model).
+
+### Pengujian
+- **`tests/Feature/Sync/SaleReturnSyncTest.php`** (14) — retur perangkat diterapkan sebagai dokumen domain (identitas diadopsi, mutasi `sale_return`, audit dengan perangkat, inbox `applied`); baris dirujuk lewat uuid; lewat **produk** (perangkat tanpa id server); create + retur dalam **satu batch** diterapkan berurutan; pengiriman ulang tidak mengembalikan stok dua kali; operasi berbeda dengan identitas retur sama tidak menggandakan; tanpa alasan / melebihi nota / penjualan belum ada di server / baris tidak cocok / identitas bukan uuid → `rejected`; retur kredit perangkat mengoreksi piutang lebih dahulu lalu refund sisanya; retur di perangkat menulis tepat satu operasi outbox (dengan referensi baris lengkap); penerapan tidak memantulkan operasi ke outbox.
+
+## Status suite
+- **763 passed / 0 failed / 4 skipped** (2661 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 4 file, 0 issue tersisa.
+- Celah lanjutan yang diketahui: langkah tarik §11.3 langkah 9–10 (`SyncTransport::pull()`) belum ada, sehingga perangkat belum menerima perubahan server setelah cursor terakhir — berikutnya setelah retur & void perangkat tersambung penuh.
+
+---
+
 # Rebuild POS Universal — Fase 5: Retur Penjualan Terkontrol (§17.4, FR-08, FR-09, Increment 45) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

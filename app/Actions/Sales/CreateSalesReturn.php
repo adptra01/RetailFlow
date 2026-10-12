@@ -22,6 +22,7 @@ use App\Support\Sync\Outbox;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * Retur penjualan terkontrol (FR-08 "Retur penjualan dengan alasan", FR-09
@@ -48,6 +49,7 @@ class CreateSalesReturn
     /**
      * @param  array{
      *     transaction_id?: int|null,
+     *     transaction_uuid?: string|null,
      *     uuid?: string|null,
      *     user_id: int,
      *     reason: string,
@@ -166,7 +168,7 @@ class CreateSalesReturn
             $tenantId,
         );
 
-        $salesReturn = SalesReturn::create([
+        $salesReturn = new SalesReturn([
             'transaction_id' => $transaction->id,
             'customer_id' => $transaction->customer_id,
             'reason' => $reason,
@@ -183,6 +185,15 @@ class CreateSalesReturn
             'client_request_id' => $clientRequestId,
             'tenant_id' => $tenantId,
         ]);
+
+        // §17.1: bila perangkat sudah menetapkan identitas dokumen retur,
+        // server mengadopsinya — `uuid` di luar `$fillable` (konvensi model),
+        // jadi di-set langsung sebelum simpan.
+        if (! empty($data['uuid']) && Str::isUuid((string) $data['uuid'])) {
+            $salesReturn->uuid = (string) $data['uuid'];
+        }
+
+        $salesReturn->save();
 
         foreach ($lines as $line) {
             /** @var TransactionItem $sold */
@@ -380,8 +391,8 @@ class CreateSalesReturn
 
         if (! empty($data['transaction_id'])) {
             $query->whereKey($data['transaction_id']);
-        } elseif (! empty($data['uuid'])) {
-            $query->where('uuid', $data['uuid']);
+        } elseif (! empty($data['transaction_uuid'])) {
+            $query->where('uuid', $data['transaction_uuid']);
         } else {
             throw ReturnNotAllowed::notFound();
         }
@@ -451,11 +462,16 @@ class CreateSalesReturn
             SyncOperationType::Create,
             [
                 'transaction_uuid' => $transaction->uuid,
+                'user_id' => (int) $data['user_id'],
                 'reason' => $data['reason'] ?? null,
                 'restore_stock' => $salesReturn->stock_restored,
                 'items' => array_map(static fn (array $line): array => [
                     'transaction_item_id' => $line['sold']->id,
+                    'transaction_item_uuid' => $line['sold']->uuid,
+                    'product_id' => $line['sold']->product_id,
+                    'product_unit_id' => $line['sold']->product_unit_id,
                     'quantity' => $line['quantity'],
+                    'reason' => $line['reason'] ?? null,
                 ], $lines),
             ],
             $clientRequestId,
