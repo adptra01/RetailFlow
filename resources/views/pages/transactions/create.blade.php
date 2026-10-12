@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\Promotions\EvaluatePromotions;
 use App\Actions\Sales\CreateSale;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentVerification;
@@ -109,7 +110,50 @@ $discountMinor = computed(function () {
     return 0;
 });
 
-$totalMinor = computed(fn () => max(0, $this->subtotalMinor - $this->discountMinor));
+/*
+ * FR-06: evaluasi promosi aktif terhadap keranjang saat ini. Murni komputasi
+ * (EvaluatePromotions) — memakai snapshot diskon per baris + transaksi yang
+ * mengikuti aturan penggabungan: satu promosi terbaik per produk, satu
+ * promosi terbaik per transaksi, keduanya boleh bergabung.
+ */
+$promotionPreview = computed(function () {
+    if (empty($this->cart)) {
+        return ['subtotal_minor' => 0, 'line_discounts' => [], 'transaction_discount' => null, 'total_discount_minor' => 0];
+    }
+
+    $items = collect($this->cart)->map(fn ($item) => [
+        'product_id' => (int) $item['product_id'],
+        'quantity' => (int) $item['quantity'],
+        'unit_price_minor' => Money::fromMajor((float) $item['unit_price'])->minor(),
+    ])->values()->all();
+
+    return app(EvaluatePromotions::class)->handle(['items' => $items]);
+});
+
+$promoDiscountMinor = computed(fn () => max(0, (int) ($this->promotionPreview['total_discount_minor'] ?? 0)));
+
+$promotionNames = computed(function () {
+    return collect($this->promotionPreview['line_discounts'] ?? [])
+        ->pluck('promotion_name')
+        ->when(($this->promotionPreview['transaction_discount']['promotion_name'] ?? null) !== null,
+            fn ($c) => $c->push($this->promotionPreview['transaction_discount']['promotion_name']))
+        ->unique()
+        ->values();
+});
+
+/*
+ * FR-06 (atur penggabungan): diskon manual menang atas promosi otomatis
+ * (kasir override). Bila tidak ada diskon manual, promosi otomatis berlaku.
+ */
+$effectiveDiscountMinor = computed(function () {
+    if ($this->discount_type !== 'none') {
+        return $this->discountMinor;
+    }
+
+    return $this->promoDiscountMinor;
+});
+
+$totalMinor = computed(fn () => max(0, $this->subtotalMinor - $this->effectiveDiscountMinor));
 
 $isCredit = computed(fn () => $this->changeMinor < 0);
 
@@ -323,14 +367,33 @@ $confirmSave = function () {
 
 $save = function () {
     try {
-        $items = collect($this->cart)->map(fn ($item) => [
-            'product_id' => (int) $item['product_id'],
-            'product_unit_id' => isset($item['product_unit_id']) ? (int) $item['product_unit_id'] : null,
-            'unit_name' => $item['unit_name'] ?? null,
-            'quantity' => (int) $item['quantity'],
-            'unit_price_minor' => Money::fromMajor((float) $item['unit_price'])->minor(),
-            'conversion_factor' => (float) ($item['conversion_factor'] ?? 1),
-        ])->values()->all();
+        // FR-06: bila tidak ada diskon manual, snapshot promosi dari
+        // EvaluatePromotions ikut tersimpan (per baris + transaksi).
+        $usePromo = $this->discount_type === 'none';
+
+        $items = collect($this->cart)->map(function ($item) use ($usePromo) {
+            $linePromo = null;
+
+            if ($usePromo) {
+                $linePromo = collect($this->promotionPreview['line_discounts'] ?? [])
+                    ->first(fn ($d) => (int) $d['product_id'] === (int) $item['product_id']);
+            }
+
+            return [
+                'product_id' => (int) $item['product_id'],
+                'product_unit_id' => isset($item['product_unit_id']) ? (int) $item['product_unit_id'] : null,
+                'unit_name' => $item['unit_name'] ?? null,
+                'quantity' => (int) $item['quantity'],
+                'unit_price_minor' => Money::fromMajor((float) $item['unit_price'])->minor(),
+                'conversion_factor' => (float) ($item['conversion_factor'] ?? 1),
+                'discount_minor' => $linePromo['discount_minor'] ?? 0,
+                'promotion_id' => $linePromo['promotion_id'] ?? null,
+                'promotion_name' => $linePromo['promotion_name'] ?? null,
+            ];
+        })->values()->all();
+
+        $transactionPromo = $this->promotionPreview['transaction_discount'] ?? null;
+        $promoTotal = $usePromo ? $this->promoDiscountMinor : 0;
 
         $transaction = app(CreateSale::class)->handle([
             'user_id' => auth()->id(),
@@ -344,7 +407,10 @@ $save = function () {
             'payment_verification' => PaymentVerification::CashierRecorded->value,
             'paid_minor' => $this->effectivePaidMinor,
             'discount_percent' => $this->discount_type === 'percent' ? (float) $this->discount_value : null,
-            'discount_minor' => $this->discount_type === 'nominal' ? (int) $this->discount_value : null,
+            'discount_minor' => $this->discount_type === 'nominal' ? (int) $this->discount_value : ($promoTotal > 0 ? $promoTotal : null),
+            'promotion_id' => $transactionPromo['promotion_id'] ?? null,
+            'promotion_name' => $transactionPromo['promotion_name'] ?? null,
+            'promotion_discount_minor' => $promoTotal > 0 ? $promoTotal : null,
             'client_request_id' => $this->client_request_id ?: null,
             'notes' => $this->notes ?? '',
             'items' => $items,
@@ -545,11 +611,16 @@ $save = function () {
                                             <span class="text-blue-600 dark:text-blue-400">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</span>
                                         </div>
 
-                                        @if ($this->discountMinor > 0)
+                                        @if ($this->effectiveDiscountMinor > 0)
                                             <div class="flex items-center justify-between text-sm text-green-600 dark:text-green-400">
                                                 <span>{{ __('Discount') }}</span>
-                                                <span>-{{ Number::currency($this->discountMinor, 'IDR', 'id') }}</span>
+                                                <span>-{{ Number::currency($this->effectiveDiscountMinor, 'IDR', 'id') }}</span>
                                             </div>
+                                            @if ($this->discount_type === 'none' && $this->promotionNames->isNotEmpty())
+                                                <p class="text-xs text-green-600/70 dark:text-green-400/70">
+                                                    {{ __('Promo: :names', ['names' => $this->promotionNames->implode(', ')]) }}
+                                                </p>
+                                            @endif
                                         @endif
 
                                         <div class="flex items-center justify-between border-t border-zinc-200 pt-2 text-base font-bold dark:border-zinc-700">
@@ -734,11 +805,16 @@ $save = function () {
                                     <td colspan="3" class="px-3 py-2 text-right">{{ __('Subtotal') }}</td>
                                     <td class="px-3 py-2 text-right">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</td>
                                 </tr>
-                                @if ($this->discountMinor > 0)
+                                @if ($this->effectiveDiscountMinor > 0)
                                     <tr class="bg-zinc-50 text-sm text-green-600 dark:bg-zinc-800 dark:text-green-400">
                                         <td colspan="3" class="px-3 py-2 text-right">{{ __('Discount') }}</td>
-                                        <td class="px-3 py-2 text-right">-{{ Number::currency($this->discountMinor, 'IDR', 'id') }}</td>
+                                        <td class="px-3 py-2 text-right">-{{ Number::currency($this->effectiveDiscountMinor, 'IDR', 'id') }}</td>
                                     </tr>
+                                    @if ($this->discount_type === 'none' && $this->promotionNames->isNotEmpty())
+                                        <tr class="bg-zinc-50 text-xs text-green-600/70 dark:bg-zinc-800 dark:text-green-400/70">
+                                            <td colspan="4" class="px-3 py-1 text-right">{{ __('Promo: :names', ['names' => $this->promotionNames->implode(', ')]) }}</td>
+                                        </tr>
+                                    @endif
                                 @endif
                                 <tr class="border-t bg-zinc-50 font-semibold dark:border-zinc-700 dark:bg-zinc-800">
                                     <td colspan="3" class="px-3 py-2 text-right">{{ __('Total') }}</td>

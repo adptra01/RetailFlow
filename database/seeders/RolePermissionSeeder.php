@@ -26,6 +26,7 @@ class RolePermissionSeeder extends Seeder
             'transactions' => ['view', 'create', 'edit', 'delete'],
             'purchases' => ['view', 'create', 'edit', 'delete'],
             'ingredients' => ['view', 'create', 'edit', 'delete'],
+            'promotions' => ['view', 'create', 'edit', 'delete'],
             'stock' => ['view'],
             'opname' => ['view', 'create'],
             'reports' => ['view'],
@@ -54,6 +55,7 @@ class RolePermissionSeeder extends Seeder
                 || str($p)->startsWith('customers.')
                 || str($p)->startsWith('purchases.')
                 || str($p)->startsWith('ingredients.')
+                || str($p)->startsWith('promotions.')
                 || str($p)->startsWith('stock.')
                 || str($p)->startsWith('opname.')
                 || $p === 'transactions.view'

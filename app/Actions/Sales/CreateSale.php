@@ -78,12 +78,17 @@ class CreateSale
      *         unit_name?: string|null,
      *         conversion_factor?: float|int|null,
      *         discount_minor?: int|null,
+     *         promotion_id?: int|null,
+     *         promotion_name?: string|null,
      *     }>,
      *     payment_method?: string,
      *     paid_minor?: int,
      *     payment_verification?: string|null,
      *     discount_minor?: int|null,
      *     discount_percent?: int|float|null,
+     *     promotion_id?: int|null,
+     *     promotion_name?: string|null,
+     *     promotion_discount_minor?: int|null,
      *     client_request_id?: string|null,
      *     user_id: int,
      *     customer_id?: int|null,
@@ -185,6 +190,13 @@ class CreateSale
             'client_request_id' => $clientRequestId,
             'subtotal_minor' => $subtotal->minor(),
             'discount_minor' => $discount->minor(),
+            // FR-06: snapshot promosi saat penjualan terjadi — perubahan
+            // konfigurasi promosi tidak pernah mengubah transaksi historis.
+            'promotion_id' => isset($data['promotion_id']) ? (int) $data['promotion_id'] : null,
+            'promotion_name' => $data['promotion_name'] ?? null,
+            'promotion_discount_minor' => isset($data['promotion_discount_minor'])
+                ? max(0, (int) $data['promotion_discount_minor'])
+                : null,
             'total_minor' => $total->minor(),
             'paid_minor' => $paid->minor(),
             'change_minor' => $change->minor(),
@@ -211,6 +223,8 @@ class CreateSale
                 'quantity' => $item['quantity'],
                 'unit_price_minor' => $unitPrice->minor(),
                 'discount_minor' => $lineDiscount->minor(),
+                'promotion_id' => isset($item['promotion_id']) ? (int) $item['promotion_id'] : null,
+                'promotion_name' => $item['promotion_name'] ?? null,
                 'subtotal_minor' => $lineSubtotal->minor(),
                 // Transitional decimal mirror.
                 'unit_price' => $unitPrice->major(),
@@ -320,6 +334,9 @@ class CreateSale
             'paid_minor' => (int) ($data['paid_minor'] ?? 0),
             'discount_minor' => $data['discount_minor'] ?? null,
             'discount_percent' => $data['discount_percent'] ?? null,
+            'promotion_id' => $data['promotion_id'] ?? null,
+            'promotion_name' => $data['promotion_name'] ?? null,
+            'promotion_discount_minor' => $data['promotion_discount_minor'] ?? null,
             'notes' => $data['notes'] ?? null,
             'location_id' => $data['location_id'] ?? null,
             'items' => array_map(static fn (array $item): array => [
@@ -330,6 +347,8 @@ class CreateSale
                 'unit_name' => $item['unit_name'],
                 'conversion_factor' => $item['conversion_factor'],
                 'discount_minor' => $item['discount_minor'],
+                'promotion_id' => $item['promotion_id'] ?? null,
+                'promotion_name' => $item['promotion_name'] ?? null,
             ], $items),
         ];
     }
@@ -337,7 +356,7 @@ class CreateSale
     /**
      * Normalizes and validates raw line items into domain-shaped records.
      *
-     * @return list<array{product_id: int, quantity: int, unit_price_minor: int, discount_minor: int, conversion_factor: float, product_unit_id: int|null, unit_name: string|null}>
+     * @return list<array{product_id: int, quantity: int, unit_price_minor: int, discount_minor: int, conversion_factor: float, product_unit_id: int|null, unit_name: string|null, promotion_id: int|null, promotion_name: string|null}>
      */
     private function normalizeItems(mixed $rawItems): array
     {
@@ -366,6 +385,8 @@ class CreateSale
                 'conversion_factor' => $factor,
                 'product_unit_id' => isset($item['product_unit_id']) ? (int) $item['product_unit_id'] : null,
                 'unit_name' => $item['unit_name'] ?? null,
+                'promotion_id' => isset($item['promotion_id']) ? (int) $item['promotion_id'] : null,
+                'promotion_name' => $item['promotion_name'] ?? null,
             ];
         }
 

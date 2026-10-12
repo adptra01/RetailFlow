@@ -33,7 +33,7 @@
             {{-- Penjualan --}}
             @php($tenant = auth()->user()->tenant)
             @php($featureManager = $tenant ? App\Support\Features\FeatureProfileManager::for($tenant) : null)
-            @if ($featureManager && ($featureManager->isEnabled(App\Enums\Module::Cashier) || $featureManager->isEnabled(App\Enums\Module::History) || $featureManager->isEnabled(App\Enums\Module::Customers) || $featureManager->isEnabled(App\Enums\Module::Receivables)))
+            @if ($featureManager && ($featureManager->isEnabled(App\Enums\Module::Cashier) || $featureManager->isEnabled(App\Enums\Module::History) || $featureManager->isEnabled(App\Enums\Module::Customers) || $featureManager->isEnabled(App\Enums\Module::Receivables) || $featureManager->isEnabled(App\Enums\Module::Promotions)))
             <flux:sidebar.group :heading="__('Penjualan')" class="grid mt-4">
                 @if ($featureManager->isEnabled(App\Enums\Module::Cashier))
                 @can('transactions.create')
@@ -63,6 +63,15 @@
                 <flux:sidebar.item icon="credit-card" href="/payments/customer"
                     :current="request()->routeIs('payments.customer.*')">
                     {{ __('Piutang Customer') }}
+                </flux:sidebar.item>
+                @endcan
+                @endif
+
+                @if ($featureManager->isEnabled(App\Enums\Module::Promotions))
+                @can('promotions.view')
+                <flux:sidebar.item icon="tag" href="/promotions"
+                    :current="request()->routeIs('promotions.*')">
+                    {{ __('Promosi') }}
                 </flux:sidebar.item>
                 @endcan
                 @endif

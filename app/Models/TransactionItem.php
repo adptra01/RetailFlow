@@ -21,6 +21,8 @@ class TransactionItem extends Model
         'transaction_id', 'product_id', 'product_unit_id', 'unit_name',
         'quantity', 'unit_price', 'subtotal', 'tenant_id',
         'unit_price_minor', 'discount_minor', 'subtotal_minor',
+        // FR-06: snapshot promosi per baris.
+        'promotion_id', 'promotion_name',
     ];
 
     protected function casts(): array
@@ -31,6 +33,7 @@ class TransactionItem extends Model
             'unit_price_minor' => 'integer',
             'discount_minor' => 'integer',
             'subtotal_minor' => 'integer',
+            'promotion_id' => 'integer',
             'version' => 'integer',
         ];
     }

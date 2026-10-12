@@ -24,6 +24,8 @@ class Transaction extends Model
         'paid_amount', 'change_amount', 'payment_method', 'payment_status', 'payment_verification', 'notes',
         'tenant_id', 'location_id', 'device_id', 'client_request_id',
         'subtotal_minor', 'discount_minor', 'total_minor', 'paid_minor', 'change_minor',
+        // FR-06: snapshot promosi (diterima dari aksi domain CreateSale).
+        'promotion_id', 'promotion_name', 'promotion_discount_minor',
     ];
 
     protected function casts(): array
@@ -37,6 +39,8 @@ class Transaction extends Model
             'total_minor' => 'integer',
             'paid_minor' => 'integer',
             'change_minor' => 'integer',
+            'promotion_id' => 'integer',
+            'promotion_discount_minor' => 'integer',
             'version' => 'integer',
         ];
     }

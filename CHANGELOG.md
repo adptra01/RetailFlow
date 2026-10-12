@@ -1,3 +1,44 @@
+# Rebuild POS Universal — Fase 5: Promosi & Diskon Otomatis (FR-06, Increment 41) (belum dirilis)
+
+**Tanggal:** 12 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§5.1 MVP #8 "Diskon dengan aturan dan izin yang jelas"; FR-06 Diskon: nominal, persen, per produk, seluruh transaksi, promosi berdasarkan periode; batas diskon; snapshot historis).
+
+## Perubahan
+
+### Migrasi
+- **`2026_10_12_000005_create_promotions_tables.php`**:
+  - `promotions` — promosi diskon (name, code, `discount_type` percent|nominal, `discount_value`, `scope` product|transaction, `min_purchase_minor`, `max_discount_minor` (cap, nullable), `starts_at`/`ends_at`, `is_active`, `priority`, notes; uuid/tenant_id/version/soft-deletes).
+  - `promotion_products` — pivot M2M (promotion_id, product_id, unique `[promotion_id, product_id]`, FK cascade). Pivot **bukan** tabel sync → `uuid` nullable.
+  - Snapshot aditif pada `transactions` (`promotion_id` FK nullOnDelete, `promotion_name`, `promotion_discount_minor`) dan `transaction_items` (`promotion_id`, `promotion_name`) — FR-06 "transaksi harus menyimpan snapshot harga dan diskon".
+
+### Model, Factory & Support
+- **`Promotion`** — model promosi (BelongsToTenant, HasSyncIdentity, SoftDeletes, JournalSyncChanges; relasi `products()`; scope `activeAt()`; helper `discountFor()` dengan aturan non-negatif + clamp subtotal + cap; `label()`).
+- **`PromotionFactory`** — state `percent()`, `nominal()`, `productScope()` (deterministik: min purchase & cap eksplisit) untuk pengujian.
+- **`Transaction` / `TransactionItem`** — field snapshot promosi ditambahkan ke `$fillable` + cast integer.
+
+### Aksi Domain
+- **`Promotions\EvaluatePromotions`** — evaluasi murni (tanpa tulis). Aturan penggabungan eksplisit (FR-06): **satu promosi terbaik per produk** + **satu promosi terbaik per transaksi**; kedua lapisan boleh bergabung; `min_purchase_minor` dihitung dari subtotal; nilai diskon tidak pernah negatif, di-clamp ke subtotal, dan di-cap `max_discount_minor`; periode divalidasi terhadap waktu evaluasi; tie-break `priority` tertinggi.
+- **`Sales\CreateSale`** — menerima snapshot promosi opsional (amandemen additif, lintasan lama tak berubah): per baris `promotion_id`/`promotion_name`, transaksi `promotion_id`/`promotion_name`/`promotion_discount_minor`; ikut dibawa di `syncPayload` untuk replay sinkronisasi.
+
+### UI (Folio/Volt)
+- **`/promotions`** — CRUD promosi: tabel (search, paginate; tipe, scope, nilai, syarat, periode, status), create/edit modal dengan multiselect produk (saat scope=product), toggle aktif, hapus (soft delete — snapshot historis tetap utuh).
+- **`/transactions/create`** (kasir) — panel promosi: `EvaluatePromotions` dievaluasi terhadap keranjang secara live; ringkasan & modal konfirmasi menampilkan "Diskon" (promo otomatis bila tidak ada diskon manual) + baris "Promo: <nama>". **Aturan penggabungan**: diskon manual menang atas promosi otomatis (kasir override); bila manual kosong, promosi otomatis berlaku. Snapshot promosi ikut dikirim ke `CreateSale` saat checkout.
+
+### Modul & Otorisasi (FR-13)
+- **`Module::Promotions`** (`promotions`) kini diaktifkan di profil `retail` (sudah ada di `advanced`).
+- Link sidebar "Promosi" di grup Penjualan (`@can('promotions.view')`); seeder `RolePermissionSeeder` menambah grup permission `promotions.{view,create,edit,delete}` (pemilik diberi akses).
+
+### Pengujian
+- **`tests/Feature/Promotions/EvaluatePromotionsTest.php`** (15) — keranjang kosong; persen/nominal transaksi; gate min purchase; gate periode (kedaluwarsa/belum mulai); cap; clamp non-negatif; promo produk hanya untuk produk terdaftar; best-of per produk; tie-break prioritas; gabung lapisan baris + transaksi; promosi non-aktif diabaikan; isolasi antar-tenant; pembulatan persen; pengelompokan baris per produk.
+- **`tests/Feature/Promotions/PromotionPageTest.php`** (12) — render; create (transaksi & produk + selected_products); validasi (name/value, scope produk wajib pilih produk); `max_discount_minor` kosong → null (bukan 0); edit; toggle aktif; delete (soft); visibilitas sidebar (Retail tampil, Simple tersembunyi).
+- **`tests/Feature/Promotions/CreateSalePromotionTest.php`** (3) — snapshot promosi tersimpan di transaksi & item; penjualan tanpa promosi tetap null; menghapus promosi tidak mengubah transaksi historis.
+
+## Status suite
+- **666 passed / 0 failed / 4 skipped** (2180 assertions). Pint bersih (12 file, 7 style issues).
+- Migrasi `000005` dijalankan di dev (rollback+migrate ulang setelah `promotion_products.uuid` dibuat nullable).
+
+---
+
 # Rebuild POS Universal — Fase 5: Resep & Bahan Baku F&B (Increment 40) (belum dirilis)
 
 **Tanggal:** 12 Oktober 2026
