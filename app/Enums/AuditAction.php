@@ -18,6 +18,9 @@ enum AuditAction: string
     // Pembatalan penjualan terkontrol (VoidSale, izin `transaction.void`, §17.4).
     case SaleVoided = 'sale.voided';
 
+    // Retur penjualan — CreateSalesReturn (FR-08, §17.4).
+    case SaleReturned = 'sale.returned';
+
     // Pembayaran piutang (RecordReceivablePayment).
     case ReceivablePayment = 'receivable.payment';
 

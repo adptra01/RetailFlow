@@ -51,6 +51,7 @@ enum Role: string
                 Permission::UpdatePrice,
                 Permission::ApplyDiscount,
                 Permission::VoidTransaction,
+                Permission::ReturnTransaction,
                 Permission::AdjustStock,
                 Permission::ViewFinancialReports,
                 Permission::ManageUsers,
@@ -60,6 +61,7 @@ enum Role: string
                 Permission::AccessModule,
                 Permission::ApplyDiscount,
                 Permission::VoidTransaction,
+                Permission::ReturnTransaction,
                 Permission::AdjustStock,
                 Permission::ViewFinancialReports,
             ],
@@ -67,6 +69,7 @@ enum Role: string
                 Permission::AccessModule,
                 Permission::ApplyDiscount,
                 Permission::VoidTransaction,
+                Permission::ReturnTransaction,
             ],
             self::InventoryManager => [
                 Permission::AccessModule,

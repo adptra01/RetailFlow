@@ -1,3 +1,63 @@
+# Rebuild POS Universal — Fase 5: Retur Penjualan Terkontrol (§17.4, FR-08, FR-09, Increment 45) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (FR-08 "Retur penjualan dengan alasan"; FR-09 "Retur dan pembatalan"; §17.4 "Retur dan void" — "Pengembalian stok hanya dilakukan sesuai kebijakan retur", "Koreksi pembayaran harus tercatat"; §17.1 idempotensi; FR-12 izin & audit; FR-07 piutang).
+
+## Latar
+Increment 43 menutup pembatalan (void); §17.4 menuntut pasangan keduanya, **retur**, dan FR-08 menyebut "Retur penjualan dengan alasan" sebagai fitur stok inti. Halaman `/returns/sales` sudah ada di sidebar dan **tampak berfungsi**, padahal rusak dan melanggar aturan: ia membaca `transaction_items.qty` & `price` (kolom yang sebenarnya bernama `quantity` & `unit_price`) sehingga batas jumlah selalu 0, menulis `sales_returns.total` desimal tanpa tenant/uuid, **menambah stok sendiri** dengan `increment('stock', …)` (melewati ledger, melanggar "setiap perubahan stok harus berasal dari dokumen mutasi"), dan tidak memeriksa izin maupun alasan. Tidak ada satu pun tes yang menyentuhnya.
+
+## Perubahan
+
+### Migrasi
+- **`2026_10_13_000002_add_identity_and_money_to_sales_returns_tables.php`** (aditif):
+  - `sales_returns` — `uuid` (unik), `tenant_id` (uuid, indeks), `version`, `deleted_at`, `subtotal_minor`/`discount_minor`/`total_minor`, `receivable_adjustment_minor`, `refund_minor`, `stock_restored`, `location_id`, `device_id`, `client_request_id` (unik) — plus `customer_id` dibuat **nullable** agar retur penjualan tunai tanpa pelanggan (walk-in) mungkin;
+  - `sales_return_items` — `uuid` (unik), `tenant_id`, `unit_price_minor`, `discount_minor`, `subtotal_minor`, `version`, `deleted_at`;
+  - **backfill** dari cermin desimal lama: IDR berminor exponent 0, jadi minor = nilai rupiah bulat — **tanpa** ×100 (konvensi yang sama dengan backfill tabel penjualan `2026_10_10_000009`); kolom desimal lama (`total`/`price`/`subtotal`) dipertahankan sebagai cermin transisional, ditulis oleh aksi domain.
+
+### Aksi Domain
+- **`Sales\CreateSalesReturn`** (baru) — satu-satunya jalur retur, atomik (`DB::transaction` + `lockForUpdate`):
+  - **alasan wajib** (`ReturnNotAllowed::reasonRequired`) dan **izin wajib** (`transaction.return`, FR-12);
+  - **jumlah tidak melebihi nota**: per baris dibatasi `quantity − Σ qty retur sebelumnya`, sehingga retur berulang tidak dapat melebihi penjualan;
+  - **nilai mengikuti nota**, bukan harga katalog kini — nilai baris dihitung proporsional dari `transaction_items.subtotal_minor` (sudah memperhitungkan diskon baris), dengan snapshot `unit_price_minor` per baris;
+  - **stok sesuai kebijakan** (`pos.sales.restore_stock_on_return`, override per panggilan): mutasi `sale_return` (+qty, `before_stock`/`after_stock` benar, `saveQuietly()` seperti `CreateSale`), memakai faktor konversi satuan jual; produk stok tak terbatas tidak membuat mutasi;
+  - **koreksi pembayaran tercatat (§17.4/FR-07)**: nilai retur lebih dahulu membatalkan sisa piutang (`receivable_adjustment_minor`, mengurangi `remaining_minor` **dan** `original_amount_minor` agar invarian `original = dibayar + sisa` tetap berlaku; piutang menjadi `closed` bila sisa 0; saldo pelanggan dikoreksi), sisanya menjadi `refund_minor` (kas keluar);
+  - **transaksi batal tidak dapat diretur** (`ReturnNotAllowed::voidedSale`) — koreksinya sudah void;
+  - **idempoten** (`client_request_id` unik): pengiriman ulang mengembalikan dokumen yang sama, sehingga **stok tidak dikembalikan dua kali** (§17.1);
+  - **audit** `AuditAction::SaleReturned` (`sale.returned`) dengan aktor, perangkat, alasan, nilai, koreksi piutang, refund, dan ringkasan baris (FR-12);
+  - **outbox perangkat** (§11.1): bila retur dibuat di perangkat (`device_id`), satu operasi `sale_return`/`create` masuk outbox dalam transaksi yang sama; dapat dimatikan (`enqueue_for_sync: false`).
+- **`App\Exceptions\Sales\ReturnNotAllowed`** (baru) — pelanggaran domain retur (alasan kosong, transaksi tak ditemukan, transaksi batal, baris bukan milik transaksi, jumlah melebihi sisa) dengan `render()` 422.
+
+### Model, Enum & Konfigurasi
+- **`SalesReturn`/`SalesReturnItem`** dibangun ulang mengikuti konvensi rebuild (`BelongsToTenant`, `HasSyncIdentity`, `JournalSyncChanges`, `SoftDeletes`, cast integer minor, `version`), relasi `items()`/`transaction()`/`productUnit()`, nomor `RTS-…` otomatis; accessor nilai memakai **`Money`** (menghormati `pos.currency.minor_exponent`), bukan pembagian 100 tetap.
+- **`Transaction`** — relasi `receivable()` dan helper `isCredit()`.
+- **`Permission::ReturnTransaction`** = `'transaction.return'` (label "Melakukan retur penjualan"), ditambahkan ke matriks `Role` owner/admin/supervisor/**cashier** (default yang dapat disesuaikan; mengikuti preseden `transaction.void`).
+- **`AuditAction::SaleReturned`** = `'sale.returned'`.
+- **`config/pos.php`** — `sales.restore_stock_on_return` (default `true`, `POS_RESTORE_STOCK_ON_RETURN`).
+
+### UI
+- **`/returns/sales`** ditulis ulang: halaman tipis yang **tidak pernah menulis stok atau angka uang sendiri** — semuanya lewat `CreateSalesReturn`. Daftar retur menampilkan nota, pelanggan, nilai retur, koreksi piutang, dan refund; pencarian nota menolak transaksi batal, menampilkan **terjual/sudah diretur/maksimum** per baris, nilai per unit menurut nota, perkiraan refund kas, alasan retur wajib, dan saklar kebijakan pengembalian stok. Aksi hanya ditawarkan kepada pemegang izin `transaction.return` (`@can`), sedangkan penegakannya tetap di domain.
+- **`/reports`** — kartu **"Retur Penjualan"** (jumlah, nilai, refund kas) di samping kartu "Transaksi Dibatalkan" (FR-09 "Retur dan pembatalan").
+
+### Laporan
+- **`Reports\SalesReport`** — metrik `retur_count`, `retur_minor`, `retur_refund_minor` beserta definisinya; retur **tidak** mengurangi omzet (FR-09: omzet ≠ penerimaan ≠ retur).
+- **`Actions\Reports\GenerateCashFlowReport`** — retur penjualan menjadi **arus kas keluar** (`retur_penjualan`) sebesar `refund_minor` saja; koreksi yang hanya membatalkan piutang tidak menggerakkan kas. Placeholder "Sales returns would need a separate action" dihapus.
+
+### Data demo
+- **`database/seeders/ReturnSeeder.php`** — retur penjualan demo ditulis dengan bentuk baru (minor, tenant, uuid, cermin desimal) dan jatuh kembali ke cermin desimal untuk transaksi demo lama yang `subtotal_minor`-nya masih 0; stok sengaja tidak diubah (jalur otoritatif tetap `CreateSalesReturn`).
+
+### Pengujian
+- **`tests/Feature/Sales/SalesReturnTest.php`** (20) — dokumen retur + mutasi `sale_return` + audit; nilai proporsional untuk retur sebagian; alasan wajib; izin (`viewer` ditolak); jumlah melebihi nota ditolak; retur berulang dibatasi sisa; baris milik transaksi lain ditolak; transaksi batal tidak dapat diretur; transaksi tak dikenal / tanpa item ditolak; `client_request_id` sama → satu dokumen & stok kembali sekali; kebijakan stok mati (dan override eksplisit); produk stok tak terbatas tanpa mutasi; retur kredit membatalkan piutang lebih dahulu (refund hanya sisanya); piutang sudah lunas → refund penuh; laporan memisahkan retur dari omzet & arus kas; retur di perangkat menulis tepat satu operasi outbox.
+- **`tests/Feature/Sales/SalesReturnUiTest.php`** (5) — retur dari halaman; sisa jumlah tampil setelah retur pertama; alasan kosong tidak mengubah apa pun; aktor tanpa izin tidak ditawari aksinya (dan panggilan langsung ditolak domain); nota batal tidak dapat dipilih.
+- **`tests/Feature/ReportsTest.php`** — retur tampil sebagai metrik tersendiri di `/reports`.
+- **`tests/Feature/Users/RolePermissionCatalogTest.php`**, **`DefaultRolesSeederTest.php`** — katalog izin 10, matriks supervisor/cashier bertambah `transaction.return`.
+
+## Status suite
+- **749 passed / 0 failed / 4 skipped** (2553 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 20 file, 0 issue tersisa.
+- Migrasi `2026_10_13_000002` dijalankan di dev (DDEV/MySQL); `ReturnSeeder` dijalankan ulang agar data demo konsisten (desimal & minor sepakat).
+- Catatan: data demo penjualan lama (`TransactionSeeder`) masih hanya mengisi cermin desimal sehingga `transactions.*_minor` bernilai 0 pada baris demo — bukan bagian increment ini, tetapi perlu satu increment "minor units data demo" agar laporan demo tidak menampilkan 0.
+
+---
+
 # Rebuild POS Universal — Fase 5: Pembatalan dari Perangkat & Identitas Penjualan (§11.1–§11.3, §17.1, Increment 44) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

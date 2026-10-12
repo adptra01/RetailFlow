@@ -11,6 +11,7 @@ use App\Models\PurchaseReturnItem;
 use App\Models\SalesReturn;
 use App\Models\SalesReturnItem;
 use App\Models\Supplier;
+use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
@@ -28,6 +29,8 @@ class ReturnSeeder extends Seeder
         // Sales Returns
         if (SalesReturn::count() === 0) {
             $transactions = Transaction::inRandomOrder()->take(5)->get();
+            $tenantId = Tenant::query()->value('id');
+            $userId = $users->random()->id;
 
             foreach ($transactions as $transaction) {
                 $items = TransactionItem::where('transaction_id', $transaction->id)->get();
@@ -36,24 +39,32 @@ class ReturnSeeder extends Seeder
                 }
 
                 $returnItems = $items->random(min(rand(1, 2), $items->count()));
-                $total = 0;
-                $return = SalesReturn::create([
+                $totalMinor = 0;
+                // `created_at` diisi langsung (bukan mass assignment) agar
+                // tanggal demo tetap mengikuti tanggal transaksi.
+                $return = new SalesReturn([
                     'return_number' => 'RTS-'.$transaction->created_at->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
                     'transaction_id' => $transaction->id,
                     'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->id,
-                    'total' => 0,
                     'reason' => fake()->randomElement([
                         'Barang rusak', 'Kadaluarsa', 'Salah produk',
                         'Pelanggan komplain', 'Barang tidak sesuai',
                     ]),
-                    'user_id' => $users->random()->id,
-                    'created_at' => $transaction->created_at->addDays(rand(1, 3)),
+                    'user_id' => $userId,
+                    'tenant_id' => $tenantId,
                 ]);
+                $return->created_at = $transaction->created_at->addDays(rand(1, 3));
+                $return->save();
 
                 foreach ($returnItems as $item) {
                     $qty = rand(1, $item->quantity);
-                    $subtotal = $qty * $item->unit_price;
-                    $total += $subtotal;
+                    $sold = (int) $item->quantity;
+                    // Data demo lama hanya punya cermin desimal (minor = 0);
+                    // minor tetap sumber kebenaran bila tersedia.
+                    $lineMinor = (int) ($item->subtotal_minor ?: round((float) $item->subtotal));
+                    // Nilai retur proporsional seperti domain (setelah diskon baris).
+                    $subtotalMinor = $sold > 0 ? (int) round($lineMinor * $qty / $sold) : 0;
+                    $totalMinor += $subtotalMinor;
 
                     SalesReturnItem::create([
                         'sales_return_id' => $return->id,
@@ -61,15 +72,27 @@ class ReturnSeeder extends Seeder
                         'product_id' => $item->product_id,
                         'product_unit_id' => $item->product_unit_id ?? ProductUnit::where('product_id', $item->product_id)->value('id'),
                         'qty' => $qty,
-                        'price' => $item->unit_price,
-                        'subtotal' => $subtotal,
+                        'unit_price_minor' => $qty > 0 ? (int) round($subtotalMinor / $qty) : 0,
+                        'discount_minor' => 0,
+                        'subtotal_minor' => $subtotalMinor,
+                        'price' => $qty > 0 ? (int) round($subtotalMinor / $qty) : 0,
+                        'subtotal' => $subtotalMinor,
                         'reason' => $return->reason,
+                        'tenant_id' => $tenantId,
                     ]);
                 }
 
-                if ($total > 0) {
-                    $return->update(['total' => $total]);
-                }
+                // Data demo hanya untuk tampilan: stok TIDAK diubah (seperti
+                // sebelumnya) dan seluruh nilai retur diperlakukan sebagai
+                // refund kas. Jalur otoritatif tetap `CreateSalesReturn`.
+                $return->update([
+                    'subtotal_minor' => $totalMinor,
+                    'total_minor' => $totalMinor,
+                    'receivable_adjustment_minor' => 0,
+                    'refund_minor' => $totalMinor,
+                    'stock_restored' => false,
+                    'total' => $totalMinor,
+                ]);
             }
         }
 

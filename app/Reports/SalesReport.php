@@ -6,6 +6,7 @@ use App\Audit\AuditRecorder;
 use App\Enums\AuditAction;
 use App\Enums\Permission;
 use App\Models\Product;
+use App\Models\SalesReturn;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
@@ -134,6 +135,16 @@ class SalesReport
 
         $count = $activeCount;
 
+        // FR-09 "Retur dan pembatalan" + §17.4: retur dicatat sebagai metrik
+        // tersendiri; ia tidak boleh menutupi omzet penjualan (§FR-09: omzet,
+        // penerimaan, piutang, dan laba bukan angka yang sama).
+        $returns = $this->tenantQuery(SalesReturn::class)
+            ->whereBetween('created_at', [$start, $end])
+            ->get();
+
+        $returMinor = (int) $returns->sum('total_minor');
+        $refundMinor = (int) $returns->sum('refund_minor');
+
         // FR-12: akses laporan keuangan dicatat dengan aktor + periode —
         // hanya bila aktor nyata (CLI/otomasi tanpa aktor tidak dicatat).
         if ($this->actor !== null) {
@@ -155,6 +166,9 @@ class SalesReport
             'transaksi_berdiskon_count' => $diskonCount,
             'dibatalkan_count' => $voidCount,
             'dibatalkan_minor' => $voidMinor,
+            'retur_count' => $returns->count(),
+            'retur_minor' => $returMinor,
+            'retur_refund_minor' => $refundMinor,
             'rata_rata_transaksi_minor' => $count > 0 ? (int) round($omzet / $count) : 0,
             'diskon_minor' => $diskonTxn + $itemDiscount,
             'metode_pembayaran' => array_values($methods),
@@ -196,6 +210,9 @@ class SalesReport
             'rata_rata_transaksi_minor' => 'Omzet dibagi jumlah transaksi pada periode.',
             'dibatalkan_count' => 'Jumlah transaksi yang dibatalkan (void) pada periode. Transaksi batal tidak dihitung pada omzet, penerimaan, piutang, maupun produk terlaris (§17.4).',
             'dibatalkan_minor' => 'Nilai transaksi yang dibatalkan pada periode (Σ total_minor transaksi batal) — untuk jejak, bukan omzet.',
+            'retur_count' => 'Jumlah dokumen retur penjualan pada periode (FR-08/FR-09 "Retur dan pembatalan").',
+            'retur_minor' => 'Nilai barang yang diretur pada periode (Σ total_minor retur). Retur tidak mengurangi omzet penjualan; ia metrik tersendiri agar omzet ≠ penerimaan ≠ retur.',
+            'retur_refund_minor' => 'Uang yang benar-benar dikembalikan ke pelanggan pada periode (Σ refund_minor retur). Koreksi yang hanya membatalkan sisa piutang tidak termasuk kas keluar (§17.4).',
         ];
     }
 

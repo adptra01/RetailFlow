@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Category;
+use App\Models\SalesReturn;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use Illuminate\Support\Carbon;
@@ -44,12 +45,19 @@ $summary = computed(function () {
         ->where('payment_status', Transaction::PAYMENT_STATUS_VOID)
         ->count();
 
+    // FR-09 "Retur dan pembatalan": retur adalah metrik tersendiri — ia tidak
+    // mengurangi omzet penjualan, tetapi menambah koreksi piutang & refund.
+    $returnsQuery = SalesReturn::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
+
     return [
         'total_revenue' => $totalRevenue,
         'total_transactions' => $totalTransactions,
         'average_order' => $totalTransactions > 0 ? round($totalRevenue / $totalTransactions, 2) : 0,
         'total_items_sold' => $totalItems,
         'cancelled_transactions' => $cancelledTransactions,
+        'returns_count' => (clone $returnsQuery)->count(),
+        'returns_total' => (int) (clone $returnsQuery)->sum('total_minor'),
+        'returns_refund' => (int) (clone $returnsQuery)->sum('refund_minor'),
     ];
 });
 
@@ -225,6 +233,17 @@ $categoryData = computed(function () {
                         {{ Number::format($this->summary['cancelled_transactions']) }}</p>
                     <p class="mt-1 text-xs text-red-600 dark:text-red-400">
                         {{ __('Tidak dihitung pada omzet, penerimaan, atau produk terlaris.') }}</p>
+                </div>
+
+                <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
+                    <p class="text-sm text-amber-700 dark:text-amber-400">{{ __('Retur Penjualan') }}</p>
+                    <p class="mt-1 text-2xl font-bold text-amber-800 dark:text-amber-300">
+                        {{ Number::format($this->summary['returns_count']) }}</p>
+                    <p class="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                        {{ __('Nilai :value · refund kas :refund', [
+                            'value' => Number::currency($this->summary['returns_total'], 'IDR', 'id'),
+                            'refund' => Number::currency($this->summary['returns_refund'], 'IDR', 'id'),
+                        ]) }}</p>
                 </div>
             </div>
 

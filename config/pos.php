@@ -42,6 +42,15 @@ return [
         // false = pembatalan hanya menandai transaksi batal, stok dibiarkan
         //   (mis. barang sudah diserahkan/rusak dan tidak kembali ke rak).
         'restore_stock_on_void' => (bool) env('POS_RESTORE_STOCK_ON_VOID', true),
+
+        // FR-08 "Retur penjualan dengan alasan" + §17.4 "Pengembalian stok
+        // hanya dilakukan sesuai kebijakan retur."
+        //
+        // true (default) = barang yang diretur kembali ke stok lewat mutasi
+        //   `sale_return` sebesar yang pernah dikurangi saat penjualan;
+        // false = retur hanya mencatat koreksi nilai & uang, stok dibiarkan
+        //   (mis. barang rusak atau tidak kembali ke rak).
+        'restore_stock_on_return' => (bool) env('POS_RESTORE_STOCK_ON_RETURN', true),
     ],
 
     'inventory' => [

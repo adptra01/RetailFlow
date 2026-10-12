@@ -10,13 +10,14 @@ class RolePermissionCatalogTest extends TestCase
 {
     public function test_permission_catalog_matches_fr12_capabilities(): void
     {
-        $this->assertCount(9, Permission::cases());
+        $this->assertCount(10, Permission::cases());
 
         $this->assertSame([
             'access.module',
             'price.update',
             'discount.apply',
             'transaction.void',
+            'transaction.return',
             'stock.adjust',
             'report.financial.view',
             'user.manage',
@@ -69,6 +70,7 @@ class RolePermissionCatalogTest extends TestCase
             Permission::AccessModule,
             Permission::ApplyDiscount,
             Permission::VoidTransaction,
+            Permission::ReturnTransaction,
             Permission::AdjustStock,
             Permission::ViewFinancialReports,
         ], Role::Supervisor->permissions());
@@ -83,6 +85,7 @@ class RolePermissionCatalogTest extends TestCase
             Permission::AccessModule,
             Permission::ApplyDiscount,
             Permission::VoidTransaction,
+            Permission::ReturnTransaction,
         ], Role::Cashier->permissions());
 
         $this->assertNotContains(Permission::AdjustStock, Role::Cashier->permissions());

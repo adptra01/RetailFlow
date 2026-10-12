@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\SalesReturn;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
@@ -169,5 +170,38 @@ class ReportsTest extends TestCase
 
         $this->get(route('reports.index'))
             ->assertSee('Total Revenue');
+    }
+
+    public function test_sales_returns_are_summarised_separately_from_revenue(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $transaction = Transaction::create([
+            'user_id' => $user->id,
+            'customer_name' => 'Test Customer',
+            'invoice_number' => 'INV-RETUR-1',
+            'total_amount' => 10000,
+            'paid_amount' => 10000,
+            'change_amount' => 0,
+            'payment_method' => 'cash',
+        ]);
+
+        SalesReturn::create([
+            'return_number' => 'RTS-TEST-1',
+            'transaction_id' => $transaction->id,
+            'reason' => 'Barang rusak',
+            'subtotal_minor' => 10000,
+            'total_minor' => 10000,
+            'refund_minor' => 10000,
+            'total' => 10000,
+            'user_id' => $user->id,
+        ]);
+
+        // FR-09 "Retur dan pembatalan": retur tampil sebagai metrik tersendiri.
+        $this->get(route('reports.index'))
+            ->assertOk()
+            ->assertSee('Retur Penjualan')
+            ->assertSee('10.000');
     }
 }

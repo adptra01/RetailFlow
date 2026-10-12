@@ -23,6 +23,9 @@ enum Permission: string
     // Membatalkan transaksi.
     case VoidTransaction = 'transaction.void';
 
+    // Melakukan retur penjualan (FR-08, §17.4).
+    case ReturnTransaction = 'transaction.return';
+
     // Mengubah stok.
     case AdjustStock = 'stock.adjust';
 
@@ -46,6 +49,7 @@ enum Permission: string
             self::UpdatePrice => 'Mengubah harga',
             self::ApplyDiscount => 'Memberi diskon',
             self::VoidTransaction => 'Membatalkan transaksi',
+            self::ReturnTransaction => 'Melakukan retur penjualan',
             self::AdjustStock => 'Mengubah stok',
             self::ViewFinancialReports => 'Melihat laporan keuangan',
             self::ManageUsers => 'Mengelola pengguna',

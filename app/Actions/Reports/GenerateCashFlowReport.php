@@ -5,6 +5,7 @@ namespace App\Actions\Reports;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseReturn;
 use App\Models\ReceivablePayment;
+use App\Models\SalesReturn;
 use App\Models\SupplierPayment;
 use App\Models\Transaction;
 use Illuminate\Support\Carbon;
@@ -173,7 +174,29 @@ class GenerateCashFlowReport
         $outflows = $outflows->merge($supplierPayments);
 
         // 3. Sales Returns (pengembalian uang ke pelanggan)
-        // Note: Sales returns would need a separate action, using existing returns system
+        // FR-08/§17.4: hanya uang yang benar-benar dikembalikan (`refund_minor`)
+        // yang menjadi kas keluar. Koreksi yang hanya membatalkan sisa piutang
+        // tidak menggerakkan kas.
+        $salesReturns = SalesReturn::query()
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->when($fromDate, fn ($q) => $q->whereDate('created_at', '>=', $fromDate))
+            ->when($toDate, fn ($q) => $q->whereDate('created_at', '<=', $toDate))
+            ->where('refund_minor', '>', 0)
+            ->get()
+            ->map(function ($sr) {
+                return [
+                    'date' => $sr->created_at?->format('Y-m-d'),
+                    'date_formatted' => $sr->created_at?->format('d M Y'),
+                    'type' => 'out',
+                    'category' => 'retur_penjualan',
+                    'description' => 'Retur Penjualan #'.$sr->return_number,
+                    'amount_minor' => $sr->refund_minor,
+                    'reference' => $sr->uuid,
+                    'payment_method' => 'refund',
+                ];
+            });
+
+        $outflows = $outflows->merge($salesReturns);
 
         return $outflows;
     }

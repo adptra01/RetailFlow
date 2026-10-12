@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Transaction extends Model
@@ -64,6 +65,24 @@ class Transaction extends Model
     public function isVoided(): bool
     {
         return $this->payment_status === self::PAYMENT_STATUS_VOID;
+    }
+
+    /**
+     * Penjualan kredit (FR-07): ada saldo belum dibayar yang tercatat sebagai
+     * piutang.
+     */
+    public function isCredit(): bool
+    {
+        return $this->payment_status === self::PAYMENT_STATUS_CREDIT;
+    }
+
+    /**
+     * Piutang yang lahir dari penjualan ini (FR-07). Satu transaksi memiliki
+     * paling banyak satu piutang.
+     */
+    public function receivable(): HasOne
+    {
+        return $this->hasOne(Receivable::class);
     }
 
     public function voidedBy(): BelongsTo
