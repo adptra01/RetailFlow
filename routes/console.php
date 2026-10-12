@@ -10,3 +10,7 @@ Artisan::command('inspire', function () {
 
 // FR-10: alert lokal (stok menipis, data produk tidak lengkap, piutang jatuh tempo, backup terlalu lama).
 Schedule::command('pos:alerts:generate')->hourly()->withoutOverlapping();
+
+// Plan §14 "Rekonsiliasi": selaraskan status charge yang belum final dengan
+// penyedia. Tanpa gateway/charge, perintah ini no-op dan murah.
+Schedule::command('pos:reconcile')->hourly()->withoutOverlapping();

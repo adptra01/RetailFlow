@@ -6,6 +6,9 @@ use App\Backup\BackupManager;
 use App\Models\Product;
 use App\Models\User;
 use App\Observers\StockObserver;
+use App\Payments\GatewayRegistry;
+use App\Payments\NullPaymentGateway;
+use App\Payments\PaymentGateway;
 use App\Printing\NullReceiptPrinter;
 use App\Printing\ReceiptPrinter;
 use App\Support\Devices\DeviceContext;
@@ -38,6 +41,17 @@ class AppServiceProvider extends ServiceProvider
 
         // Port printer: adaptor default no-op (printer opsional, §20).
         $this->app->bind(ReceiptPrinter::class, NullReceiptPrinter::class);
+
+        // Port payment gateway (Mode B, §14): registry penyedia + adaptor
+        // default instalasi. Tanpa gateway terpasang, adaptor `none` dipakai
+        // sehingga aplikasi tetap berjalan dan menolak dengan jelas (FR-01).
+        $this->app->singleton(GatewayRegistry::class, fn ($app) => new GatewayRegistry(
+            providers: config('pos.payments.gateways', []),
+            defaultKey: (string) config('pos.payments.default_gateway', NullPaymentGateway::KEY),
+            resolver: fn (string $class) => $app->make($class),
+        ));
+
+        $this->app->bind(PaymentGateway::class, fn ($app) => $app->make(GatewayRegistry::class)->default());
 
         // Sumber perubahan untuk pull: jurnal `sync_changes` (item Sprint 4.4
         // "Cursor sinkronisasi"). `NullSyncChangeFeed` tersedia sebagai

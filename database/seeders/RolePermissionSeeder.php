@@ -25,6 +25,7 @@ class RolePermissionSeeder extends Seeder
             'customers' => ['view', 'create', 'edit', 'delete'],
             'transactions' => ['view', 'create', 'edit', 'delete'],
             'purchases' => ['view', 'create', 'edit', 'delete'],
+            'ingredients' => ['view', 'create', 'edit', 'delete'],
             'stock' => ['view'],
             'opname' => ['view', 'create'],
             'reports' => ['view'],
@@ -46,13 +47,13 @@ class RolePermissionSeeder extends Seeder
 
         $pemilik = Role::findOrCreate('pemilik');
         $pemilik->syncPermissions(
-            $permissions->filter(fn ($p) =>
-                str($p)->startsWith('products.')
+            $permissions->filter(fn ($p) => str($p)->startsWith('products.')
                 || str($p)->startsWith('categories.')
                 || str($p)->startsWith('brands.')
                 || str($p)->startsWith('suppliers.')
                 || str($p)->startsWith('customers.')
                 || str($p)->startsWith('purchases.')
+                || str($p)->startsWith('ingredients.')
                 || str($p)->startsWith('stock.')
                 || str($p)->startsWith('opname.')
                 || $p === 'transactions.view'

@@ -1,5 +1,7 @@
 <?php
 
+use App\Payments\NullPaymentGateway;
+
 return [
 
     /*
@@ -77,6 +79,48 @@ return [
     // saat restore backup (FR-11).
     'version' => env('POS_APP_VERSION', '0.4.0'),
     'schema_version' => env('POS_SCHEMA_VERSION', '0.4.0'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payment gateway (Mode B, plan §14, FR-05)
+    |--------------------------------------------------------------------------
+    |
+    | Aplikasi wajib tetap berjalan tanpa payment gateway (FR-01); karenanya
+    | default-nya adalah adaptor `none` (no-op yang menolak dengan jelas).
+    |
+    | KREDENSIAL TIDAK BOLEH DISIMPAN DI DATABASE LOKAL (FR-05), jadi hanya
+    | dibaca dari environment (atau secret store platform) di sini. Adaptor
+    | konkretnya belum ada sampai penyedia resmi dipilih dan disepakati
+    | (plan §14 "E-wallet": jangan menjanjikan integrasi sebelum dokumentasi,
+    | kontrak, biaya, dan proses sertifikasi diperiksa).
+    |
+    */
+
+    'payments' => [
+        // Penyedia yang dipakai instalasi ini.
+        'default_gateway' => env('POS_PAYMENT_GATEWAY', NullPaymentGateway::KEY),
+
+        // Peta kunci penyedia → kelas adaptor. Tambahkan penyedia baru di sini
+        // (atau lewat konfigurasi penerapan) tanpa mengubah lapisan domain.
+        'gateways' => [
+            NullPaymentGateway::KEY => NullPaymentGateway::class,
+        ],
+
+        // Kredensial adaptor (dibaca adaptor dari sini, bukan dari DB).
+        'credentials' => [
+            'key' => env('POS_PAYMENT_GATEWAY_KEY'),
+            'secret' => env('POS_PAYMENT_GATEWAY_SECRET'),
+            'webhook_secret' => env('POS_PAYMENT_GATEWAY_WEBHOOK_SECRET'),
+        ],
+
+        // Timeout panggilan HTTP ke penyedia (detik). Timeout BUKAN berarti
+        // gagal: hasilnya tidak diketahui dan harus direkonsiliasi (§14
+        // "Penanganan timeout").
+        'timeout' => (int) env('POS_PAYMENT_GATEWAY_TIMEOUT', 15),
+
+        // Toleransi stempel waktu webhook (detik) untuk mencegah replay (§15).
+        'webhook_tolerance' => (int) env('POS_PAYMENT_GATEWAY_WEBHOOK_TOLERANCE', 300),
+    ],
 
     'backup' => [
         // Direktori tempat manifest + snapshot default disimpan. Bisa diarahkan

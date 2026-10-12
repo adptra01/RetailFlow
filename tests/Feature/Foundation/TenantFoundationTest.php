@@ -8,6 +8,7 @@ use App\Models\Device;
 use App\Models\FeatureFlag;
 use App\Models\Location;
 use App\Models\Tenant;
+use App\Support\Features\FeatureProfileManager;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Str;
@@ -31,7 +32,11 @@ class TenantFoundationTest extends TestCase
         $tenant = Tenant::factory()->create();
 
         $this->assertSame(FeatureProfile::Simple, $tenant->feature_profile);
-        $this->assertSame(['cashier', 'products', 'history', 'reports'], $tenant->enabled_modules);
+        $this->assertNull($tenant->enabled_modules);
+
+        // Verify FeatureProfileManager resolves modules from profile when enabled_modules is null
+        $manager = FeatureProfileManager::for($tenant);
+        $this->assertSame(['cashier', 'products', 'history', 'reports'], $manager->moduleNames());
     }
 
     public function test_feature_profiles_expose_modules(): void

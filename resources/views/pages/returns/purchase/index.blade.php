@@ -1,9 +1,11 @@
 <?php
 
+use App\Actions\Purchases\CreatePurchaseReturn;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseReturn;
 use Flux\Flux;
 use Livewire\WithPagination;
+
 use function Laravel\Folio\middleware;
 use function Laravel\Folio\name;
 use function Livewire\Volt\computed;
@@ -22,6 +24,8 @@ state([
     'selectedPO' => null,
     'returnItems' => [],
     'returnReason' => '',
+    'discount_minor' => 0,
+    'client_request_id' => null,
 ]);
 
 $returns = computed(function () {
@@ -45,10 +49,12 @@ $searchPO = function () {
         $this->selectedPO = $po;
         $this->returnItems = $po->items->map(fn ($item) => [
             'product_id' => $item->product_id,
+            'product_unit_id' => $item->product_unit_id,
             'name' => $item->product?->name ?? '-',
-            'max_qty' => $item->qty_received ?? $item->qty,
+            'max_qty' => $item->received_quantity,
             'qty' => 0,
-            'price' => $item->unit_price,
+            'price_minor' => $item->unit_price_minor,
+            'discount_minor' => 0,
             'reason' => '',
         ])->toArray();
     } else {
@@ -63,50 +69,70 @@ $updateQty = function ($index, $value) {
     }
 };
 
+$updateItemDiscount = function ($index, $discount) {
+    if (isset($this->returnItems[$index])) {
+        $this->returnItems[$index]['discount_minor'] = (int) max(0, round($discount * 100));
+    }
+};
+
+$subtotalMinor = computed(fn () => collect($this->returnItems)->sum(fn ($i) => ($i['price_minor'] - ($i['discount_minor'] ?? 0)) * $i['qty']));
+$totalMinor = computed(fn () => $this->subtotalMinor - $this->discount_minor);
+
 $saveReturn = function () {
     if (!$this->selectedPO || empty(array_filter($this->returnItems, fn ($i) => $i['qty'] > 0))) return;
 
     $items = array_filter($this->returnItems, fn ($i) => $i['qty'] > 0);
-    $total = collect($items)->sum(fn ($i) => $i['qty'] * $i['price']);
-
-    $lastId = PurchaseReturn::max('id') ?? 0;
-    $purchaseReturn = PurchaseReturn::create([
-        'return_number' => 'PR-' . str_pad($lastId + 1, 6, '0', STR_PAD_LEFT),
-        'purchase_order_id' => $this->selectedPO->id,
-        'supplier_id' => $this->selectedPO->supplier_id,
-        'total' => $total,
-        'reason' => $this->returnReason,
-        'user_id' => auth()->id(),
-    ]);
-
-    foreach ($items as $item) {
-        $purchaseReturn->items()->create([
+    $items = array_map(function ($item) {
+        return [
             'product_id' => $item['product_id'],
+            'product_unit_id' => $item['product_unit_id'],
             'qty' => $item['qty'],
-            'price' => $item['price'],
-            'subtotal' => $item['qty'] * $item['price'],
+            'price_minor' => $item['price_minor'],
+            'discount_minor' => $item['discount_minor'] ?? 0,
             'reason' => $item['reason'],
-        ]);
+        ];
+    }, $items);
 
-        $product = \App\Models\Product::find($item['product_id']);
-        if ($product) {
-            $product->decrement('stock', $item['qty']);
+    try {
+        (new CreatePurchaseReturn())->handle([
+            'purchase_order_id' => $this->selectedPO->id,
+            'supplier_id' => $this->selectedPO->supplier_id,
+            'user_id' => auth()->id(),
+            'items' => $items,
+            'reason' => $this->returnReason,
+            'discount_minor' => $this->discount_minor,
+            'client_request_id' => $this->client_request_id ?? (string) \Illuminate\Support\Str::uuid(),
+            'location_id' => auth()->user()?->location_id,
+            'device_id' => auth()->user()?->device_id,
+            'enqueue_for_sync' => true,
+        ]);
+    } catch (\Illuminate\Database\QueryException $e) {
+        if ($this->isIdempotencyViolation($e)) {
+            Flux::toast(variant: 'success', text: __('Purchase return already exists.'));
+            $this->showCreateModal = false;
+            $this->reset(['selectedPO', 'returnItems', 'returnReason', 'discount_minor', 'poSearch', 'client_request_id']);
+            return;
         }
+        throw $e;
     }
 
+    Flux::toast(variant: 'success', text: __('Purchase return saved.'));
     $this->showCreateModal = false;
-    $this->selectedPO = null;
-    $this->returnItems = [];
-    $this->returnReason = '';
-    Flux::toast(variant: 'success', text: __('Retur pembelian saved.'));
+    $this->reset(['selectedPO', 'returnItems', 'returnReason', 'discount_minor', 'poSearch', 'client_request_id']);
 };
+
+$isIdempotencyViolation = function (\Illuminate\Database\QueryException $e): bool {
+    $code = (int) ($e->errorInfo[1] ?? 0);
+    return $code === 1062 || $code === 1555 || str_contains($e->getMessage(), 'client_request_id');
+};
+
 ?>
 
 <x-layouts::app :title="__('Retur Pembelian')">
     @volt
         <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl">
             <flux:breadcrumbs>
-                <flux:breadcrumbs.item href="#">{{ __('Home') }}</flux:breadcrumbs.item>
+                <flux:breadcrumbs.item href="{{ route('dashboard') }}">{{ __('Home') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item>{{ __('Retur Pembelian') }}</flux:breadcrumbs.item>
             </flux:breadcrumbs>
 
@@ -139,7 +165,7 @@ $saveReturn = function () {
                                 <flux:table.cell class="font-mono text-xs font-medium">{{ $r->return_number }}</flux:table.cell>
                                 <flux:table.cell class="text-xs text-zinc-500">{{ $r->created_at->format('d M H:i') }}</flux:table.cell>
                                 <flux:table.cell class="font-medium">{{ $r->supplier?->name }}</flux:table.cell>
-                                <flux:table.cell class="font-mono">Rp {{ number_format($r->total, 0, ',', '.') }}</flux:table.cell>
+                                <flux:table.cell class="font-mono">{{ Number::currency($r->total_minor, 'IDR', 'id') }}</flux:table.cell>
                                 <flux:table.cell class="max-w-[200px] truncate text-xs text-zinc-500">{{ $r->reason ?: '-' }}</flux:table.cell>
                                 <flux:table.cell class="text-xs text-zinc-500">{{ $r->user?->name }}</flux:table.cell>
                             </flux:table.row>
@@ -164,7 +190,7 @@ $saveReturn = function () {
                             <strong>{{ __('PO') }}:</strong>
                             #{{ $this->selectedPO->order_number }}
                             - {{ $this->selectedPO->supplier?->name }}
-                            - Rp {{ number_format($this->selectedPO->total_amount, 0, ',', '.') }}
+                            - {{ Number::currency($this->selectedPO->total_minor, 'IDR', 'id') }}
                         </div>
 
                         <div class="overflow-x-auto rounded-lg border dark:border-zinc-700">
@@ -174,6 +200,8 @@ $saveReturn = function () {
                                         <th class="px-3 py-2">{{ __('Product') }}</th>
                                         <th class="px-3 py-2 text-center">{{ __('Max') }}</th>
                                         <th class="px-3 py-2 text-center">{{ __('Return Qty') }}</th>
+                                        <th class="px-3 py-2 text-right">{{ __('Price') }}</th>
+                                        <th class="px-3 py-2 text-right">{{ __('Subtotal') }}</th>
                                         <th class="px-3 py-2">{{ __('Reason') }}</th>
                                     </tr>
                                 </thead>
@@ -185,8 +213,12 @@ $saveReturn = function () {
                                             <td class="px-3 py-2 text-center">
                                                 <input type="number" min="0" max="{{ $item['max_qty'] }}"
                                                     value="{{ $item['qty'] }}"
-                                                    wire:change="updateQty({{ $index }}, $event.target.value)"
+                                                    wire:change="updateQty({{ $index }}, \$event.target.value)"
                                                     class="w-20 rounded border border-zinc-300 px-2 py-1 text-center text-sm dark:border-zinc-600 dark:bg-zinc-700">
+                                            </td>
+                                            <td class="px-3 py-2 text-right font-mono">{{ Number::currency($item['price_minor'], 'IDR', 'id') }}</td>
+                                            <td class="px-3 py-2 text-right font-mono">
+                                                {{ Number::currency(($item['price_minor'] - ($item['discount_minor'] ?? 0)) * $item['qty'], 'IDR', 'id') }}
                                             </td>
                                             <td class="px-3 py-2">
                                                 <input type="text" wire:model="returnItems.{{ $index }}.reason"
@@ -197,6 +229,25 @@ $saveReturn = function () {
                                     @endforeach
                                 </tbody>
                             </table>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                            <div>
+                                <span class="text-zinc-500 text-sm">{{ __('Subtotal') }}</span>
+                                <div class="font-mono text-lg">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</div>
+                            </div>
+                            <div>
+                                <span class="text-zinc-500 text-sm">{{ __('Discount') }}</span>
+                                <flux:input wire:model="discount_minor" type="number" step="1" min="0"
+                                    class="w-full" placeholder="0" />
+                            </div>
+                        </div>
+
+                        <div class="text-right pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                            <span class="text-zinc-500">{{ __('Total') }}</span>
+                            <div class="font-mono text-xl text-red-600 dark:text-red-400">
+                                {{ Number::currency($this->totalMinor, 'IDR', 'id') }}
+                            </div>
                         </div>
 
                         <flux:input wire:model="returnReason" placeholder="{{ __('Overall return reason...') }}" />

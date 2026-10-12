@@ -16,6 +16,7 @@ class PurchaseOrderSeeder extends Seeder
     {
         if (PurchaseOrder::count() > 0) {
             $this->command->warn('Purchase orders already exist, skipping.');
+
             return;
         }
 
@@ -24,12 +25,14 @@ class PurchaseOrderSeeder extends Seeder
 
         if ($suppliers->isEmpty()) {
             $this->command->warn('No suppliers, skipping PurchaseOrderSeeder.');
+
             return;
         }
 
         $products = Product::with('units')->get();
         if ($products->isEmpty()) {
             $this->command->warn('No products, skipping PurchaseOrderSeeder.');
+
             return;
         }
 
@@ -61,7 +64,9 @@ class PurchaseOrderSeeder extends Seeder
 
             foreach ($selectedProducts as $product) {
                 $unit = $product->units()->where('is_base', true)->first() ?? $product->units()->first();
-                if (!$unit) continue;
+                if (! $unit) {
+                    continue;
+                }
 
                 $quantity = rand(5, 50);
                 $basePrice = $unit->purchase_price ?: $product->buy_price ?: 0;
@@ -88,6 +93,6 @@ class PurchaseOrderSeeder extends Seeder
             }
         }
 
-        $this->command->info('Created ' . PurchaseOrder::count() . ' purchase orders.');
+        $this->command->info('Created '.PurchaseOrder::count().' purchase orders.');
     }
 }

@@ -5,7 +5,6 @@ namespace Database\Factories;
 use App\Models\Product;
 use App\Models\ProductUnit;
 use App\Models\SalesReturnItem;
-use App\Models\TransactionItem;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 class SalesReturnItemFactory extends Factory

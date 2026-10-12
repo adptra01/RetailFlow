@@ -1,10 +1,12 @@
 <?php
 
+use App\Enums\PaymentMethod;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use Flux\Flux;
+use Illuminate\Validation\Rule;
 use Livewire\WithPagination;
 
 use function Laravel\Folio\middleware;
@@ -120,7 +122,7 @@ $confirmSave = function () {
 
     $this->validate([
         'paid_amount' => 'required|numeric|min:0',
-        'payment_method' => 'required|string|in:cash,transfer,debit_card,credit_card',
+        'payment_method' => ['required', 'string', Rule::enum(PaymentMethod::class)],
         'notes' => 'nullable|string|max:500',
     ]);
 
@@ -164,16 +166,17 @@ $save = function () {
 };
 
 $methodLabels = computed(function () {
-    return [
-        'cash' => __('Cash'),
-        'transfer' => __('Transfer'),
-        'debit_card' => __('Debit Card'),
-        'credit_card' => __('Credit Card'),
-    ];
+    $labels = [];
+
+    foreach (PaymentMethod::cases() as $method) {
+        $labels[$method->value] = $method->label();
+    }
+
+    return $labels;
 });
 
 $paymentMethods = computed(function () {
-    return ['cash', 'transfer', 'debit_card', 'credit_card'];
+    return array_map(fn (PaymentMethod $method) => $method->value, PaymentMethod::cases());
 });
 
 ?>
@@ -418,6 +421,10 @@ $paymentMethods = computed(function () {
                     <div>
                         <span class="text-zinc-500">{{ __('Payment') }}</span>
                         <p class="font-medium">{{ $this->methodLabels[$payment_method] ?? $payment_method }}</p>
+                        <flux:badge size="sm" inset="top"
+                            :color="\App\Enums\PaymentVerification::tryFrom((string) $transaction->payment_verification)?->color() ?? 'zinc'">
+                            {{ \App\Enums\PaymentVerification::labelFor($transaction->payment_verification) }}
+                        </flux:badge>
                     </div>
                     <div>
                         <span class="text-zinc-500">{{ __('Paid') }}</span>

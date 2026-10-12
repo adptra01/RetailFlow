@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\Product;
 use App\Models\StockMovement;
 use App\Models\TransactionItem;
 use App\Models\User;
@@ -14,18 +13,23 @@ class StockMovementSeeder extends Seeder
     {
         if (StockMovement::count() > 0) {
             $this->command->warn('Stock movements already exist, skipping.');
+
             return;
         }
 
         $users = User::all();
-        if ($users->isEmpty()) return;
+        if ($users->isEmpty()) {
+            return;
+        }
 
         $transactionItems = TransactionItem::with('product')->get();
         $created = 0;
 
         foreach ($transactionItems as $item) {
             $product = $item->product;
-            if (!$product || $product->is_unlimited_stock) continue;
+            if (! $product || $product->is_unlimited_stock) {
+                continue;
+            }
 
             StockMovement::create([
                 'product_id' => $product->id,
@@ -35,7 +39,7 @@ class StockMovementSeeder extends Seeder
                 'reference_type' => 'App\Models\Transaction',
                 'reference_id' => $item->transaction_id,
                 'user_id' => $users->random()->id,
-                'notes' => 'Penjualan #' . $item->transaction_id,
+                'notes' => 'Penjualan #'.$item->transaction_id,
                 'created_at' => $item->created_at ?? now(),
             ]);
             $created++;

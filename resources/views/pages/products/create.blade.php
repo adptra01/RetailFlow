@@ -124,6 +124,33 @@ $save = function () {
     $this->redirectRoute('products.index');
 };
 
+/*
+ * OCR Bantuan Input Produk (FR-03 §20):
+ * Mengisi nilai kandidat sebagai DRAFT agar dapat ditinjau sebelum disimpan.
+ * Tidak menyimpan data secara langsung.
+ */
+$applyOcrDraft = function (array $draft) {
+    if (! empty($draft['name']) && empty($this->name)) {
+        $this->name = $draft['name'];
+        if (empty($this->slug)) {
+            $this->slug = str()->slug($this->name);
+        }
+    }
+
+    if (! empty($draft['barcode']) && empty($this->barcode)) {
+        $this->barcode = $draft['barcode'];
+    }
+
+    if (! empty($draft['price']) && empty($this->price)) {
+        $this->price = (float) $draft['price'];
+        if (isset($this->units[0])) {
+            $this->units[0]['price'] = (float) $draft['price'];
+        }
+    }
+
+    Flux::toast(variant: 'info', text: __('Hasil OCR diterapkan sebagai draf. Silakan periksa kembali.'));
+};
+
 ?>
 
 <x-layouts::app :title="__('Create Product')">
@@ -138,6 +165,47 @@ $save = function () {
             <div>
                 <flux:heading size="xl">{{ __('Create Product') }}</flux:heading>
                 <flux:subheading>{{ __('Add a new product with units.') }}</flux:subheading>
+            </div>
+
+            {{-- OCR Assist Section (FR-03 §20) --}}
+            <div class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50/50 p-4 dark:border-zinc-700 dark:bg-zinc-800/40"
+                x-data="{
+                    loading: false,
+                    statusText: '',
+                    handleFile(e) {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        this.loading = true;
+                        this.statusText = '{{ __('Menganalisis gambar dengan OCR lokal...') }}';
+                        window.posOcrEngine?.recognize(file)
+                            .then(res => {
+                                $wire.applyOcrDraft(res);
+                                this.statusText = '{{ __('Teks berhasil dibaca!') }}';
+                            })
+                            .catch(err => {
+                                this.statusText = '{{ __('Gagal membaca gambar.') }}';
+                            })
+                            .finally(() => {
+                                this.loading = false;
+                            });
+                    }
+                }">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <flux:heading size="sm">{{ __('Bantuan Input OCR (Foto Label / Kemasan)') }}</flux:heading>
+                        <flux:subheading size="xs">{{ __('Proses OCR lokal di browser. Data draft wajib dikonfirmasi manual.') }}</flux:subheading>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="cursor-pointer inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-xs hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                            <flux:icon name="camera" class="h-4 w-4" />
+                            <span>{{ __('Pindai Gambar') }}</span>
+                            <input type="file" accept="image/*" class="hidden" x-on:change="handleFile($event)" :disabled="loading" />
+                        </label>
+                    </div>
+                </div>
+                <div x-show="loading || statusText" x-cloak class="mt-2 text-xs text-zinc-500">
+                    <span x-text="statusText"></span>
+                </div>
             </div>
 
             <form wire:submit="save">

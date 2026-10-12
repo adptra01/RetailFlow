@@ -159,7 +159,7 @@ $topSellingProducts = computed(function () {
                                 </div>
                                 <div class="text-right">
                                     <p class="text-sm font-bold">{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</p>
-                                    <p class="text-xs text-emerald-600 dark:text-emerald-400">{{ __($transaction->payment_method) }}</p>
+                                    <p class="text-xs text-emerald-600 dark:text-emerald-400">{{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }}</p>
                                 </div>
                             </div>
                         @empty

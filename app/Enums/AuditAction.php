@@ -44,6 +44,24 @@ enum AuditAction: string
 
     case TenantConfigured = 'tenant.configured';
 
+    // Konfigurasi pembayaran QRIS statis (FR-05, izin payment_gateway.configure).
+    case PaymentGatewayConfigured = 'payment_gateway.configured';
+
+    // Mode B — Gateway (plan §14): pembuatan transaksi pembayaran di penyedia.
+    case PaymentChargeCreated = 'payment.charge_created';
+
+    // Callback/webhook yang sah dan mengubah status pembayaran (§14/§15).
+    case PaymentWebhookApplied = 'payment.webhook_applied';
+
+    // Callback yang tanda tangannya tidak sah — tidak boleh mengubah apa pun (§15).
+    case PaymentWebhookRejected = 'payment.webhook_rejected';
+
+    // Callback sah untuk reference ID provider yang tidak kita kenal (§14).
+    case PaymentWebhookUnmatched = 'payment.webhook_unmatched';
+
+    // Rekonsiliasi (plan §14): status lokal diselaraskan dengan status penyedia.
+    case PaymentReconciled = 'payment.reconciled';
+
     // Kegagalan pencetakan struk (PrintReceipt, §20) — penjualan tetap sah.
     case ReceiptPrintFailed = 'receipt.print_failed';
 
@@ -51,4 +69,22 @@ enum AuditAction: string
     case DeviceRegistered = 'device.registered';
 
     case DeviceRevoked = 'device.revoked';
+
+    // Pembelian — CreatePurchaseOrder.
+    case PurchaseOrderCreated = 'purchase_order.created';
+
+    // Penerimaan barang — ReceiveGoods.
+    case GoodsReceived = 'goods.received';
+
+    // Retur pembelian — CreatePurchaseReturn.
+    case PurchaseReturnCreated = 'purchase_return.created';
+
+    // Pembayaran supplier — RecordSupplierPayment.
+    case SupplierPaymentRecorded = 'supplier_payment.recorded';
+
+    // Resep & bahan baku (F&B) — UpdateRecipe.
+    case RecipeUpdated = 'recipe.updated';
+
+    // Transisi status pesanan — AdvanceOrderStatus (dapat menyesuaikan stok bahan).
+    case OrderStatusChanged = 'order.status_changed';
 }

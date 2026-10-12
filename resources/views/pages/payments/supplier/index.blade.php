@@ -1,9 +1,11 @@
 <?php
 
+use App\Actions\Purchases\RecordSupplierPayment;
 use App\Models\Supplier;
 use App\Models\SupplierPayment;
 use Flux\Flux;
 use Livewire\WithPagination;
+
 use function Laravel\Folio\middleware;
 use function Laravel\Folio\name;
 use function Livewire\Volt\computed;
@@ -20,9 +22,10 @@ state([
     'showCreateModal' => false,
     'supplierSearch' => '',
     'selectedSupplier' => null,
-    'amount' => '',
+    'amount_minor' => '',
     'paymentMethod' => 'transfer',
     'paymentNote' => '',
+    'client_request_id' => null,
 ]);
 
 $payments = computed(function () {
@@ -42,34 +45,51 @@ $searchSupplier = function () {
 
 $savePayment = function () {
     $this->validate([
-        'amount' => 'required|numeric|min:0',
+        'amount_minor' => 'required|numeric|min:1',
         'selectedSupplier' => 'required',
     ]);
 
     if (!$this->selectedSupplier) return;
 
-    $payment = SupplierPayment::create([
-        'supplier_id' => $this->selectedSupplier->id,
-        'amount' => $this->amount,
-        'payment_date' => now()->toDateString(),
-        'payment_method' => $this->paymentMethod,
-        'notes' => $this->paymentNote,
-        'user_id' => auth()->id(),
-    ]);
+    try {
+        (new RecordSupplierPayment())->handle([
+            'supplier_id' => $this->selectedSupplier->id,
+            'amount_minor' => (int) round($this->amount_minor),
+            'payment_method' => $this->paymentMethod,
+            'notes' => $this->paymentNote,
+            'user_id' => auth()->id(),
+            'location_id' => auth()->user()?->location_id,
+            'device_id' => auth()->user()?->device_id,
+            'client_request_id' => $this->client_request_id ?? (string) \Illuminate\Support\Str::uuid(),
+            'enqueue_for_sync' => true,
+        ]);
+    } catch (\Illuminate\Database\QueryException $e) {
+        if ($this->isIdempotencyViolation($e)) {
+            Flux::toast(variant: 'success', text: __('Payment already recorded.'));
+            $this->showCreateModal = false;
+            $this->reset(['supplierSearch', 'selectedSupplier', 'amount_minor', 'paymentMethod', 'paymentNote', 'client_request_id']);
+            return;
+        }
+        throw $e;
+    }
 
-    $this->selectedSupplier->decrement('balance', $this->amount);
-
-    $this->showCreateModal = false;
-    $this->reset(['supplierSearch', 'selectedSupplier', 'amount', 'paymentMethod', 'paymentNote']);
     Flux::toast(variant: 'success', text: __('Payment recorded.'));
+    $this->showCreateModal = false;
+    $this->reset(['supplierSearch', 'selectedSupplier', 'amount_minor', 'paymentMethod', 'paymentNote', 'client_request_id']);
 };
+
+$isIdempotencyViolation = function (\Illuminate\Database\QueryException $e): bool {
+    $code = (int) ($e->errorInfo[1] ?? 0);
+    return $code === 1062 || $code === 1555 || str_contains($e->getMessage(), 'client_request_id');
+};
+
 ?>
 
 <x-layouts::app :title="__('Hutang Supplier')">
     @volt
         <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl">
             <flux:breadcrumbs>
-                <flux:breadcrumbs.item href="#">{{ __('Home') }}</flux:breadcrumbs.item>
+                <flux:breadcrumbs.item href="{{ route('dashboard') }}">{{ __('Home') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item>{{ __('Hutang Supplier') }}</flux:breadcrumbs.item>
             </flux:breadcrumbs>
 
@@ -101,7 +121,9 @@ $savePayment = function () {
                             <flux:table.row :key="$p->id">
                                 <flux:table.cell class="text-xs text-zinc-500">{{ $p->payment_date->format('d M Y') }}</flux:table.cell>
                                 <flux:table.cell class="font-medium">{{ $p->supplier?->name }}</flux:table.cell>
-                                <flux:table.cell class="font-mono">(Rp {{ number_format($p->amount, 0, ',', '.') }})</flux:table.cell>
+                                <flux:table.cell class="font-mono text-red-600 dark:text-red-400">
+                                    {{ Number::currency($p->amount_minor, 'IDR', 'id') }}
+                                </flux:table.cell>
                                 <flux:table.cell class="text-xs">{{ $p->payment_method }}</flux:table.cell>
                                 <flux:table.cell class="max-w-[200px] truncate text-xs text-zinc-500">{{ $p->notes ?: '-' }}</flux:table.cell>
                                 <flux:table.cell class="text-xs text-zinc-500">{{ $p->user?->name }}</flux:table.cell>
@@ -126,23 +148,25 @@ $savePayment = function () {
                         <div class="rounded-lg border p-3 text-sm dark:border-zinc-700">
                             <strong>{{ $this->selectedSupplier->name }}</strong>
                             <span class="ml-2 text-xs text-zinc-500">
-                                {{ __('Balance:') }} Rp {{ number_format($this->selectedSupplier->balance, 0, ',', '.') }}
+                                {{ __('Balance:') }} {{ Number::currency($this->selectedSupplier->balance_minor, 'IDR', 'id') }}
                             </span>
                         </div>
                     @endif
 
-                    <flux:input wire:model="amount" type="number" step="0.01" placeholder="{{ __('Amount...') }}" />
+                    <flux:input wire:model="amount_minor" type="number" step="1" min="1"
+                        placeholder="{{ __('Amount (Rp)...') }}" label="{{ __('Amount') }}" />
 
                     <flux:select wire:model="paymentMethod" label="{{ __('Payment Method') }}">
                         <option value="transfer">{{ __('Transfer') }}</option>
                         <option value="cash">{{ __('Cash') }}</option>
+                        <option value="debit_card">{{ __('Debit Card') }}</option>
                     </flux:select>
 
-                    <flux:input wire:model="paymentNote" placeholder="{{ __('Notes...') }}" />
+                    <flux:input wire:model="paymentNote" placeholder="{{ __('Notes...') }}" label="{{ __('Notes') }}" />
 
                     <div class="flex justify-end gap-2">
                         <flux:modal.close><flux:button variant="filled">{{ __('Cancel') }}</flux:button></flux:modal.close>
-                        <flux:button variant="primary" wire:click="savePayment" :disabled="!$amount || !$selectedSupplier">
+                        <flux:button variant="primary" wire:click="savePayment" :disabled="!$amount_minor || !$selectedSupplier">
                             {{ __('Save Payment') }}
                         </flux:button>
                     </div>

@@ -38,6 +38,8 @@ enum Module: string
 
     case Orders = 'orders';
 
+    case Ingredients = 'ingredients';
+
     case Audit = 'audit';
 
     case Sync = 'sync';
@@ -58,6 +60,7 @@ enum Module: string
             self::ReportsAdvanced => 'Laporan lanjutan',
             self::Menu => 'Menu',
             self::Orders => 'Pesanan',
+            self::Ingredients => 'Bahan Baku',
             self::Audit => 'Audit',
             self::Sync => 'Sinkronisasi',
         };

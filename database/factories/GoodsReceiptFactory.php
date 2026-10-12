@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Models\GoodsReceipt;
 use App\Models\PurchaseOrder;
+use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -15,9 +16,13 @@ class GoodsReceiptFactory extends Factory
     {
         return [
             'purchase_order_id' => PurchaseOrder::factory(),
-            'user_id' => User::inRandomOrder()->first()?->id ?? User::factory(),
+            'user_id' => User::factory(),
             'notes' => fake()->optional()->sentence(),
-            'created_at' => fake()->dateTimeBetween('-30 days', 'now'),
         ];
+    }
+
+    public function forTenant(Tenant $tenant): static
+    {
+        return $this->state(fn () => ['tenant_id' => $tenant->id]);
     }
 }

@@ -79,19 +79,29 @@ $delete = function () {
     Flux::toast(variant: 'success', text: __('Transaction deleted.'));
 };
 
-$methodLabels = [
-    'cash' => 'Tunai',
-    'transfer' => 'Transfer',
-    'debit_card' => 'Kartu Debit',
-    'credit_card' => 'Kartu Kredit',
-];
+/**
+ * Label & warna metode pembayaran (FR-05).
+ *
+ * Diletakkan sebagai closure (metode komponen) — bukan array biasa — karena
+ * Volt hanya mengompilasi closure/`state()` dari skrip halaman; variabel array
+ * biasa akan hilang sehingga tampilan diam-diam jatuh ke nilai mentah.
+ * Sumber label tunggal adalah `PaymentMethod`; nilai di luar katalog
+ * (data impor lama) tetap ditampilkan apa adanya.
+ */
+$methodLabel = function (string $method): string {
+    return \App\Enums\PaymentMethod::labelFor($method);
+};
 
-$methodColors = [
-    'cash' => 'green',
-    'transfer' => 'blue',
-    'debit_card' => 'purple',
-    'credit_card' => 'orange',
-];
+$methodColor = function (string $method): string {
+    return match (\App\Enums\PaymentMethod::tryFrom($method)) {
+        \App\Enums\PaymentMethod::Cash => 'green',
+        \App\Enums\PaymentMethod::Transfer => 'blue',
+        \App\Enums\PaymentMethod::DebitCard => 'purple',
+        \App\Enums\PaymentMethod::CreditCard => 'orange',
+        \App\Enums\PaymentMethod::QrisStatic => 'teal',
+        default => 'gray',
+    };
+};
 
 ?>
 
@@ -175,8 +185,8 @@ $methodColors = [
 
                                 <flux:table.cell>
                                     <flux:badge size="sm"
-                                        :color="$methodColors[$transaction->payment_method] ?? 'gray'" inset="top bottom">
-                                        {{ $methodLabels[$transaction->payment_method] ?? $transaction->payment_method }}
+                                        :color="$this->methodColor($transaction->payment_method)" inset="top bottom">
+                                        {{ $this->methodLabel($transaction->payment_method) }}
                                     </flux:badge>
                                 </flux:table.cell>
 
@@ -226,7 +236,7 @@ $methodColors = [
                                 </flux:subheading>
                             </div>
                             <flux:badge size="sm" inset="top bottom">
-                                {{ $methodLabels[$this->viewTransaction->payment_method] ?? $this->viewTransaction->payment_method }}
+                                {{ $this->methodLabel($this->viewTransaction->payment_method) }}
                             </flux:badge>
                         </div>
 

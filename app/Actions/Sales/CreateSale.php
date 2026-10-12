@@ -3,14 +3,19 @@
 namespace App\Actions\Sales;
 
 use App\Enums\AuditAction;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentVerification;
 use App\Enums\SyncOperationType;
+use App\Exceptions\Payments\QrisNotConfigured;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
+use App\Exceptions\Sales\InvalidPaymentVerification;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Product;
 use App\Models\Receivable;
 use App\Models\StockMovement;
+use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Support\Money\Money;
@@ -45,7 +50,13 @@ use Illuminate\Support\Str;
  *    hilang saat crash dan dapat dikirim ke server. Pemanggil dapat
  *    mematikannya dengan `enqueue_for_sync => false` (dipakai sisi server saat
  *    menerapkan operasi dari perangkat, agar tidak memantul);
- *  - honest money: all amounts are integer minor units (FR-04 / §17.1).
+ *  - honest money: all amounts are integer minor units (FR-04 / §17.1);
+ *  - honest payment (FR-05): `payment_method` divalidasi terhadap katalog
+ *    `PaymentMethod`. Metode yang hanya berupa instruksi pembayaran (transfer
+ *    manual, QRIS statis) tidak pernah menghasilkan `payment_verification`
+ *    "terverifikasi" — status itu hanya datang dari gateway resmi. QRIS statis
+ *    menuntut nominal tepat (bayar == total, tanpa kembalian) dan menolak
+ *    transaksi bila tenant belum mengunggah QRIS.
  *
  * Money math (IDR minor exponent 0, see config/pos.php):
  *  - item subtotal      = unit_price_minor * quantity
@@ -70,6 +81,7 @@ class CreateSale
      *     }>,
      *     payment_method?: string,
      *     paid_minor?: int,
+     *     payment_verification?: string|null,
      *     discount_minor?: int|null,
      *     discount_percent?: int|float|null,
      *     client_request_id?: string|null,
@@ -119,10 +131,13 @@ class CreateSale
         $discount = $this->resolveTransactionDiscount($data, $subtotal);
         $total = $subtotal->subtract($discount);
         $paid = new Money((int) ($data['paid_minor'] ?? 0));
-        $paymentMethod = (string) ($data['payment_method'] ?? 'cash');
+        $paymentMethod = $this->resolvePaymentMethod($data['payment_method'] ?? null);
+        $verification = $this->resolvePaymentVerification($data['payment_verification'] ?? null);
         $change = $this->resolveChange($paymentMethod, $paid, $total);
 
         $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
+        $this->assertPaymentRules($paymentMethod, $verification, $paid, $total, $tenantId);
 
         // §11.4: kebijakan stok negatif dapat diaktifkan owner. Bila aktif,
         // penjualan tetap diterapkan meski membuat stok negatif; konfliknya
@@ -163,8 +178,9 @@ class CreateSale
             'customer_id' => $customer?->id,
             'customer_name' => $data['customer_name'] ?? $customer?->name ?? '',
             'invoice_number' => $this->generateInvoiceNumber(),
-            'payment_method' => $paymentMethod,
+            'payment_method' => $paymentMethod->value,
             'payment_status' => $isCredit ? 'credit' : 'paid',
+            'payment_verification' => $verification->value,
             'notes' => $data['notes'] ?? null,
             'client_request_id' => $clientRequestId,
             'subtotal_minor' => $subtotal->minor(),
@@ -235,6 +251,8 @@ class CreateSale
                 'client_request_id' => $clientRequestId,
                 'invoice_number' => $transaction->invoice_number,
                 'payment_status' => $transaction->payment_status,
+                'payment_method' => $paymentMethod->value,
+                'payment_verification' => $verification->value,
             ],
         ]);
 
@@ -297,7 +315,8 @@ class CreateSale
             'user_id' => $data['user_id'],
             'customer_id' => $data['customer_id'] ?? null,
             'customer_name' => $data['customer_name'] ?? null,
-            'payment_method' => $data['payment_method'] ?? 'cash',
+            'payment_method' => $data['payment_method'] ?? PaymentMethod::Cash->value,
+            'payment_verification' => $data['payment_verification'] ?? PaymentVerification::CashierRecorded->value,
             'paid_minor' => (int) ($data['paid_minor'] ?? 0),
             'discount_minor' => $data['discount_minor'] ?? null,
             'discount_percent' => $data['discount_percent'] ?? null,
@@ -401,9 +420,14 @@ class CreateSale
         return max(1, (int) round($item['quantity'] * $item['conversion_factor']));
     }
 
-    private function resolveChange(string $paymentMethod, Money $paid, Money $total): Money
+    /**
+     * FR-05: hanya tunai yang menerima kelebihan bayar (kembalian); metode
+     * lain harus tepat. QRIS statis bahkan tidak boleh kurang: nominal QR
+     * sudah tetap, jadi bayar != total ditolak (lihat `assertPaymentRules`).
+     */
+    private function resolveChange(PaymentMethod $paymentMethod, Money $paid, Money $total): Money
     {
-        if ($paid->minor() > $total->minor() && $paymentMethod !== 'cash') {
+        if ($paid->minor() > $total->minor() && ! $paymentMethod->allowsChange()) {
             throw new InvalidPaymentAmount('Pembayaran non-tunai tidak boleh melebihi total.');
         }
 
@@ -413,6 +437,79 @@ class CreateSale
         }
 
         return $paid->subtract($total);
+    }
+
+    /**
+     * `payment_method` adalah batas tulis: nilai di luar katalog FR-05 ditolak
+     * (jalur baca tetap toleran lewat `PaymentMethod::labelFor`). Nilai kosong
+     * tetap berarti tunai, seperti perilaku sebelumnya.
+     */
+    private function resolvePaymentMethod(mixed $method): PaymentMethod
+    {
+        $method = is_string($method) ? $method : '';
+
+        if ($method === '') {
+            return PaymentMethod::Cash;
+        }
+
+        return PaymentMethod::tryFrom($method)
+            ?? throw new \InvalidArgumentException("Metode pembayaran tidak dikenal: {$method}.");
+    }
+
+    /**
+     * FR-05: status verifikasi bersifat opsional; default "dicatat kasir".
+     * Nilai di luar katalog juga ditolak (hanya gateway yang boleh menulis
+     * `verified`/`failed`/`refunded`, dan itu lewat jalur gateway, bukan POS).
+     */
+    private function resolvePaymentVerification(mixed $verification): PaymentVerification
+    {
+        if ($verification === null || $verification === '') {
+            return PaymentVerification::CashierRecorded;
+        }
+
+        if ($verification instanceof PaymentVerification) {
+            return $verification;
+        }
+
+        return PaymentVerification::tryFrom((string) $verification)
+            ?? throw new \InvalidArgumentException("Status verifikasi pembayaran tidak dikenal: {$verification}.");
+    }
+
+    /**
+     * Aturan pembayaran FR-05 yang tidak bergantung pada nominal saja.
+     */
+    private function assertPaymentRules(
+        PaymentMethod $paymentMethod,
+        PaymentVerification $verification,
+        Money $paid,
+        Money $total,
+        ?string $tenantId,
+    ): void {
+        if (! $paymentMethod->isInstructionOnly()) {
+            return;
+        }
+
+        // FR-05: QRIS statis/transfer manual tidak pernah "terverifikasi"
+        // hanya karena kasir menekan tombol "dibayar".
+        if ($verification->isVerified()) {
+            throw InvalidPaymentVerification::notAllowedForInstructionOnly($paymentMethod->value);
+        }
+
+        if ($paymentMethod !== PaymentMethod::QrisStatic) {
+            return;
+        }
+
+        // Nominal QRIS statis tetap: bayar harus tepat, tanpa kembalian.
+        if ($paid->minor() !== $total->minor()) {
+            throw new InvalidPaymentAmount('Pembayaran QRIS statis harus tepat sejumlah total (tidak ada kembalian).');
+        }
+
+        // Tidak ada QRIS tanpa QRIS yang diunggah pemilik.
+        $tenant = $tenantId !== null ? Tenant::find($tenantId) : null;
+
+        if ($tenant === null || ! $tenant->hasQrisConfigured()) {
+            throw QrisNotConfigured::forTenant($tenantId);
+        }
     }
 
     private function assertStock(Product $product, int $baseQuantity, bool $allowNegativeStock = false): void

@@ -82,6 +82,7 @@ $confirmDelete = function (Customer $customer) {
                                     <flux:dropdown position="bottom" align="end">
                                         <flux:button variant="ghost" size="sm" icon="ellipsis-horizontal" inset="top bottom" />
                                         <flux:menu>
+                                            <flux:menu.item icon="eye" href="/customers/{{ $customer->id }}/show">{{ __('View') }}</flux:menu.item>
                                             <flux:menu.item icon="pencil" href="/customers/{{ $customer->id }}">{{ __('Edit') }}</flux:menu.item>
                                             <flux:menu.separator />
                                             <flux:menu.item icon="trash" variant="danger" wire:click="confirmDelete({{ $customer->id }})">{{ __('Delete') }}</flux:menu.item>

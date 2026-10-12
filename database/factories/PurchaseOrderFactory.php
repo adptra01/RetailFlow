@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Models\PurchaseOrder;
 use App\Models\Supplier;
+use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -13,13 +14,18 @@ class PurchaseOrderFactory extends Factory
 
     public function definition(): array
     {
+        $subtotal = fake()->numberBetween(50000, 2000000);
+        $discount = fake()->numberBetween(0, 100000);
+        $total = $subtotal - $discount;
+
         return [
-            'supplier_id' => Supplier::inRandomOrder()->first()?->id ?? Supplier::factory(),
-            'user_id' => User::inRandomOrder()->first()?->id ?? User::factory(),
-            'status' => fake()->randomElement(['pending', 'partial', 'received', 'cancelled']),
-            'total_amount' => fake()->randomFloat(2, 50000, 2000000),
+            'supplier_id' => Supplier::factory(),
+            'user_id' => User::factory(),
+            'status' => fake()->randomElement(['draft', 'pending', 'partial', 'received', 'cancelled']),
+            'subtotal_minor' => $subtotal,
+            'discount_minor' => $discount,
+            'total_minor' => $total,
             'notes' => fake()->optional()->sentence(),
-            'created_at' => fake()->dateTimeBetween('-60 days', 'now'),
         ];
     }
 
@@ -31,5 +37,10 @@ class PurchaseOrderFactory extends Factory
     public function received(): static
     {
         return $this->state(fn () => ['status' => 'received']);
+    }
+
+    public function forTenant(Tenant $tenant): static
+    {
+        return $this->state(fn () => ['tenant_id' => $tenant->id]);
     }
 }

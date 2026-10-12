@@ -212,7 +212,7 @@ mount(function (Transaction $transaction) {
                 <td class="text-right bold">{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</td>
             </tr>
             <tr>
-                <td>Bayar ({{ strtoupper($transaction->payment_method) }})</td>
+                <td>Bayar ({{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }})</td>
                 <td class="text-right">{{ Number::currency($transaction->paid_amount, 'IDR', 'id') }}</td>
             </tr>
             <tr>
@@ -220,6 +220,12 @@ mount(function (Transaction $transaction) {
                 <td class="text-right bold">{{ Number::currency($transaction->change_amount, 'IDR', 'id') }}</td>
             </tr>
         </table>
+
+        @if (\App\Enums\PaymentMethod::tryFrom((string) $transaction->payment_method)?->isInstructionOnly())
+            <div class="text-center" style="margin-top: 6px; font-style: italic;">
+                Pembayaran dicatat kasir — belum terverifikasi.
+            </div>
+        @endif
 
         <div class="divider"></div>
 

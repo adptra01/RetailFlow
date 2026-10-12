@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\Purchases\ReceiveGoods;
 use App\Models\GoodsReceipt;
 use App\Models\PurchaseOrder;
 use Flux\Flux;
@@ -7,6 +8,7 @@ use Flux\Flux;
 use function Laravel\Folio\middleware;
 use function Laravel\Folio\name;
 use function Livewire\Volt\computed;
+use function Livewire\Volt\mount;
 use function Livewire\Volt\state;
 
 name('purchases.show');
@@ -17,13 +19,37 @@ state([
     'showReceiveModal' => false,
     'receiptQuantities' => [],
     'receiptNotes' => '',
+    'client_request_id' => null,
+    'poId' => null,
 ]);
 
-$statusColor = fn ($status) => match ($status) { 'draft' => 'zinc', 'pending' => 'amber', 'partial' => 'blue', 'received' => 'green', 'cancelled' => 'red', default => 'zinc' };
-
-$po = computed(function () {
-    return PurchaseOrder::with(['supplier', 'user', 'items.product', 'items.productUnit', 'goodsReceipts.user'])->findOrFail(request()->route('purchaseorder'));
+// Resolve PO from route binding (Folio passes either model or raw ID)
+mount(function (?PurchaseOrder $purchaseOrder = null) {
+    if ($purchaseOrder) {
+        $this->poId = $purchaseOrder->getKey();
+    }
 });
+
+$resolvePoId = function () {
+    $routeValue = request()->route('purchaseorder');
+    return $routeValue instanceof PurchaseOrder ? $routeValue->getKey() : $routeValue;
+};
+
+$po = computed(function () use ($resolvePoId) {
+    return PurchaseOrder::with(['supplier', 'user', 'items.product', 'items.productUnit', 'goodsReceipts.user'])
+        ->findOrFail($this->poId ?? $resolvePoId());
+});
+
+$statusColor = computed(fn ($status) => match ($status) {
+    'draft' => 'zinc',
+    'pending' => 'amber',
+    'partial' => 'blue',
+    'received' => 'green',
+    'cancelled' => 'red',
+    default => 'zinc',
+});
+
+$statusLabel = computed(fn ($status) => __(ucfirst($status)));
 
 $openReceive = function () {
     $this->receiptQuantities = $this->po->items->mapWithKeys(fn ($item) => [$item->id => $item->quantity - $item->received_quantity])->toArray();
@@ -36,38 +62,55 @@ $receiveGoods = function () {
         'receiptNotes' => 'nullable|string|max:500',
     ]);
 
-    GoodsReceipt::create([
-        'receipt_number' => 'GR-' . now()->format('YmdHis') . '-' . strtoupper(\Illuminate\Support\Str::random(6)),
-        'purchase_order_id' => $this->po->id,
-        'user_id' => auth()->id(),
-        'notes' => $this->receiptNotes,
-    ]);
-
+    $items = [];
     foreach ($this->receiptQuantities as $itemId => $qty) {
         if ($qty <= 0) continue;
-        $item = $this->po->items()->findOrFail($itemId);
-        $item->increment('received_quantity', $qty);
-
-        $product = $item->product;
-        if ($product && !$product->is_unlimited_stock) {
-            $baseQty = $qty * ($item->productUnit?->conversion_factor ?? 1);
-            $product->increment('stock', $baseQty);
-        }
+        $items[] = [
+            'purchase_order_item_id' => (int) $itemId,
+            'quantity' => $qty,
+            'notes' => null,
+        ];
     }
 
-    $fresh = $this->po->fresh();
-    $allReceived = $fresh->items->every(fn ($i) => $i->received_quantity >= $i->quantity);
-    $anyReceived = $fresh->items->sum('received_quantity') > 0;
-    $fresh->update(['status' => $allReceived ? 'received' : ($anyReceived ? 'partial' : $fresh->status)]);
+    if (empty($items)) {
+        Flux::toast(variant: 'error', text: __('No items to receive.'));
+        return;
+    }
 
+    try {
+        (new ReceiveGoods())->handle([
+            'purchase_order_id' => $this->po->id,
+            'user_id' => auth()->id(),
+            'items' => $items,
+            'notes' => $this->receiptNotes,
+            'client_request_id' => $this->client_request_id ?? (string) \Illuminate\Support\Str::uuid(),
+            'location_id' => auth()->user()?->location_id,
+            'device_id' => auth()->user()?->device_id,
+            'enqueue_for_sync' => true,
+        ]);
+    } catch (\Illuminate\Database\QueryException $e) {
+        if ($this->isIdempotencyViolation($e)) {
+            Flux::toast(variant: 'success', text: __('Goods already received.'));
+            $this->showReceiveModal = false;
+            $this->receiptNotes = '';
+            return;
+        }
+        throw $e;
+    }
+
+    Flux::toast(variant: 'success', text: __('Goods received successfully.'));
     $this->showReceiveModal = false;
     $this->receiptNotes = '';
-    Flux::toast(variant: 'success', text: __('Goods received successfully.'));
 };
 
 $cancelPO = function () {
     $this->po->update(['status' => 'cancelled']);
     Flux::toast(variant: 'success', text: __('Purchase order cancelled.'));
+};
+
+$isIdempotencyViolation = function (\Illuminate\Database\QueryException $e): bool {
+    $code = (int) ($e->errorInfo[1] ?? 0);
+    return $code === 1062 || $code === 1555 || str_contains($e->getMessage(), 'client_request_id');
 };
 
 ?>
@@ -76,7 +119,7 @@ $cancelPO = function () {
     @volt
         <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl">
             <flux:breadcrumbs>
-                <flux:breadcrumbs.item href="#">{{ __('Home') }}</flux:breadcrumbs.item>
+                <flux:breadcrumbs.item href="{{ route('dashboard') }}">{{ __('Home') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item href="/purchases">{{ __('Purchase Orders') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item>{{ $this->po->order_number }}</flux:breadcrumbs.item>
             </flux:breadcrumbs>
@@ -85,7 +128,7 @@ $cancelPO = function () {
                 <div>
                     <div class="flex items-center gap-3">
                         <flux:heading size="xl">{{ $this->po->order_number }}</flux:heading>
-                        <flux:badge :color="$statusColor($this->po->status)" size="lg">{{ __(ucfirst($this->po->status)) }}</flux:badge>
+                        <flux:badge :color="$this->statusColor($this->po->status)" size="lg">{{ $this->statusLabel($this->po->status) }}</flux:badge>
                     </div>
                     <flux:subheading>{{ __('From') }} <strong>{{ $this->po->supplier?->name }}</strong> &middot; {{ $this->po->created_at->format('d M Y H:i') }}</flux:subheading>
                 </div>
@@ -132,15 +175,15 @@ $cancelPO = function () {
                                             <span class="text-zinc-400">0</span>
                                         @endif
                                     </td>
-                                    <td class="py-3 pr-4 text-right">{{ Number::currency($item->unit_price, 'IDR', 'id') }}</td>
-                                    <td class="py-3 pr-4 text-right font-medium">{{ Number::currency($item->subtotal, 'IDR', 'id') }}</td>
+                                    <td class="py-3 pr-4 text-right">{{ Number::currency($item->unit_price_minor, 'IDR', 'id') }}</td>
+                                    <td class="py-3 pr-4 text-right font-medium">{{ Number::currency($item->subtotal_minor, 'IDR', 'id') }}</td>
                                 </tr>
                             @endforeach
                         </tbody>
                         <tfoot>
                             <tr class="border-t font-semibold dark:border-zinc-700">
                                 <td colspan="5" class="py-3 pr-4 text-right">{{ __('Total') }}</td>
-                                <td class="py-3 pr-4 text-right">{{ Number::currency($this->po->total_amount, 'IDR', 'id') }}</td>
+                                <td class="py-3 pr-4 text-right">{{ Number::currency($this->po->total_minor, 'IDR', 'id') }}</td>
                             </tr>
                         </tfoot>
                     </table>

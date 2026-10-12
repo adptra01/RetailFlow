@@ -13,13 +13,16 @@ class StockOpnameSeeder extends Seeder
     {
         if (StockOpname::count() > 0) {
             $this->command->warn('Stock opnames already exist, skipping.');
+
             return;
         }
 
         $users = User::all();
         $products = Product::where('is_unlimited_stock', false)->get();
 
-        if ($products->isEmpty() || $users->isEmpty()) return;
+        if ($products->isEmpty() || $users->isEmpty()) {
+            return;
+        }
 
         $products->random(min(5, $products->count()))->each(function ($product) use ($users) {
             $system = $product->stock;

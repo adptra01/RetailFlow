@@ -29,6 +29,24 @@ final class AuditRecorder
     ) {}
 
     /**
+     * Salinan perekam untuk tenant tertentu.
+     *
+     * Dipakai use case yang tenant-nya baru diketahui setelah memuat model
+     * (mis. webhook gateway, yang datang tanpa konteks tenant — §12). Bila
+     * perekam ini sudah diikat ke tenant secara eksplisit (konstruktor/CLI/
+     * pengujian), tenant itu yang menang; bila belum (mis. di-resolve container
+     * tanpa konteks), tenant model yang dipakai.
+     */
+    public function withTenant(?string $tenantId): self
+    {
+        if ($this->tenantId !== null || $tenantId === null) {
+            return $this;
+        }
+
+        return new self($tenantId, $this->deviceId);
+    }
+
+    /**
      * Catat satu tindakan sensitif (append-only; tidak pernah diupdate).
      *
      * @param  array<string, mixed>  $metadata  data konteks tambahan (JSON)

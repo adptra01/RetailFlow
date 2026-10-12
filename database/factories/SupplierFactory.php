@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\Supplier;
+use App\Models\Tenant;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 class SupplierFactory extends Factory
@@ -17,7 +18,13 @@ class SupplierFactory extends Factory
             'phone' => fake()->phoneNumber(),
             'email' => fake()->optional()->companyEmail(),
             'address' => fake()->address(),
-            'balance' => fake()->randomFloat(2, 0, 5000000),
+            'description' => fake()->optional()->sentence(),
+            'balance_minor' => fake()->numberBetween(0, 500000000),
         ];
+    }
+
+    public function forTenant(Tenant $tenant): static
+    {
+        return $this->state(fn () => ['tenant_id' => $tenant->id]);
     }
 }

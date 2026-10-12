@@ -10,7 +10,7 @@ class ModuleCatalogTest extends TestCase
 {
     public function test_module_catalog_values_and_labels(): void
     {
-        $this->assertCount(15, Module::cases());
+        $this->assertCount(16, Module::cases());
 
         foreach (Module::cases() as $module) {
             $this->assertNotEmpty($module->label());
@@ -18,6 +18,10 @@ class ModuleCatalogTest extends TestCase
 
         $this->assertSame('reports_advanced', Module::ReportsAdvanced->value);
         $this->assertSame('Laporan lanjutan', Module::ReportsAdvanced->label());
+
+        // Increment 40: bahan baku untuk resep F&B.
+        $this->assertSame('ingredients', Module::Ingredients->value);
+        $this->assertSame('Bahan Baku', Module::Ingredients->label());
     }
 
     public function test_simple_profile_hides_purchases_and_advanced_reports(): void
@@ -47,6 +51,15 @@ class ModuleCatalogTest extends TestCase
         ));
 
         $this->assertContains(Module::ReportsAdvanced->value, FeatureProfile::Advanced->modules());
+    }
+
+    public function test_food_beverage_profile_exposes_ingredients_module(): void
+    {
+        $modules = FeatureProfile::FoodBeverage->modules();
+
+        $this->assertContains(Module::Menu->value, $modules);
+        $this->assertContains(Module::Orders->value, $modules);
+        $this->assertContains(Module::Ingredients->value, $modules);
     }
 
     public function test_all_profile_modules_are_known_catalog_values(): void

@@ -63,6 +63,7 @@ $paymentMethodData = computed(function () {
         'transfer' => __('Transfer'),
         'debit_card' => __('Debit Card'),
         'credit_card' => __('Credit Card'),
+        'qris_static' => __('QRIS (statis)'),
     ];
 
     $rows = Transaction::whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59'])
@@ -118,6 +119,13 @@ $lowStockProducts = computed(function () {
         ->orderBy('stock')
         ->limit(10)
         ->get();
+});
+
+$receivablesReport = computed(function () {
+    return app(\App\Actions\Reports\GenerateReceivableReport::class)->handle([
+        'from_date' => $this->from_date,
+        'to_date' => $this->to_date,
+    ]);
 });
 
 $categoryData = computed(function () {
@@ -215,6 +223,62 @@ $categoryData = computed(function () {
                 </div>
             </div>
 
+            {{-- Advanced Reports Navigation --}}
+            <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+                <flux:heading size="lg" class="mb-1">{{ __('Advanced Reports') }}</flux:heading>
+                <flux:subheading class="mb-4">{{ __('Laporan lanjutan: margin historis, pergerakan stok, arus kas, umur piutang, dan lainnya') }}</flux:subheading>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <a href="/reports/margin"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="chart-bar" class="text-emerald-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Margin History') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Pendapatan, HPP & margin per periode') }}</div>
+                        </div>
+                    </a>
+                    <a href="/reports/stock-movement"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="arrows-up-down" class="text-blue-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Stock Movement') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Mutasi stok masuk/keluar per produk') }}</div>
+                        </div>
+                    </a>
+                    <a href="/reports/cash-flow"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="banknotes" class="text-violet-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Cash Flow') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Pemasukan & pengeluaran kas harian') }}</div>
+                        </div>
+                    </a>
+                    <a href="/reports/aging"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="clock" class="text-amber-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Aging Receivables') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Umur piutang per pelanggan') }}</div>
+                        </div>
+                    </a>
+                    <a href="/reports/supplier-payments"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="building-storefront" class="text-rose-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Supplier Payments') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Pembayaran & hutang supplier') }}</div>
+                        </div>
+                    </a>
+                    <a href="/reports/purchase-vs-sales"
+                        class="group flex items-center gap-3 rounded-lg border border-zinc-200 p-4 transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-700/50">
+                        <flux:icon name="scale" class="text-cyan-600" />
+                        <div>
+                            <div class="text-sm font-medium">{{ __('Purchase vs Sales') }}</div>
+                            <div class="text-xs text-zinc-500">{{ __('Analisis pembelian vs penjualan') }}</div>
+                        </div>
+                    </a>
+                </div>
+            </div>
+
             {{-- Low Stock Products --}}
             @if ($this->lowStockProducts->isNotEmpty())
             <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
@@ -236,6 +300,43 @@ $categoryData = computed(function () {
                             </span>
                         </div>
                     @endforeach
+                </div>
+            </div>
+            @endif
+
+            {{-- Laporan Piutang (Credit Sales - FR-07) --}}
+            @if ($this->receivablesReport->isNotEmpty())
+            <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+                <div class="mb-4 flex items-center justify-between">
+                    <div>
+                        <flux:heading size="lg">{{ __('Laporan Piutang (Credit Sales)') }}</flux:heading>
+                        <flux:subheading>{{ __('Daftar piutang aktif yang belum dilunasi.') }}</flux:subheading>
+                    </div>
+                    <flux:badge color="red">{{ __('Belum Lunas: ') . $this->receivablesReport->count() }}</flux:badge>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="border-b border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
+                            <tr>
+                                <th class="p-3 font-medium">{{ __('Pelanggan') }}</th>
+                                <th class="p-3 font-medium">{{ __('No. Invoice') }}</th>
+                                <th class="p-3 font-medium">{{ __('Jumlah Piutang') }}</th>
+                                <th class="p-3 font-medium">{{ __('Tgl Buat') }}</th>
+                                <th class="p-3 font-medium">{{ __('Jatuh Tempo') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-zinc-100 dark:divide-zinc-700">
+                            @foreach ($this->receivablesReport as $rec)
+                                <tr>
+                                    <td class="p-3 font-medium text-zinc-900 dark:text-zinc-100">{{ $rec['customer_name'] }}</td>
+                                    <td class="p-3 text-zinc-600 dark:text-zinc-400">{{ $rec['invoice_number'] }}</td>
+                                    <td class="p-3 font-semibold text-red-600 dark:text-red-400">{{ $rec['amount_formatted'] }}</td>
+                                    <td class="p-3 text-zinc-500">{{ $rec['created_at'] }}</td>
+                                    <td class="p-3 text-zinc-500">{{ $rec['due_date'] ?? '-' }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
                 </div>
             </div>
             @endif

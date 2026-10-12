@@ -33,7 +33,11 @@ final class FeatureProfileManager
      */
     public function modules(): array
     {
-        return self::resolve($this->tenant->feature_profile, $this->tenant->enabled_modules);
+        $profile = $this->tenant->feature_profile instanceof FeatureProfile
+            ? $this->tenant->feature_profile
+            : (FeatureProfile::tryFrom($this->tenant->feature_profile) ?? FeatureProfile::Simple);
+
+        return self::resolve($profile, $this->tenant->enabled_modules);
     }
 
     /**

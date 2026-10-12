@@ -21,7 +21,7 @@ class TenantFactory extends Factory
             'feature_profile' => FeatureProfile::Simple,
             'ui_complexity' => 'simple',
             'onboarding_state' => 'completed',
-            'enabled_modules' => FeatureProfile::Simple->modules(),
+            'enabled_modules' => null,
             'currency_code' => 'IDR',
             'timezone' => 'Asia/Jakarta',
         ];

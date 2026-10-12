@@ -84,7 +84,7 @@ $statusLabel = fn ($status) => __(ucfirst($status));
                                 <flux:table.cell>
                                     <flux:badge size="sm" inset="top bottom">{{ $po->items_count }}</flux:badge>
                                 </flux:table.cell>
-                                <flux:table.cell class="font-medium">{{ Number::currency($po->total_amount, 'IDR', 'id') }}</flux:table.cell>
+                                <flux:table.cell class="font-medium">{{ Number::currency($po->total_minor, 'IDR', 'id') }}</flux:table.cell>
                                 <flux:table.cell>
                                     <flux:badge :color="$this->statusColor($po->status)" size="sm" inset="top bottom">
                                         {{ $this->statusLabel($po->status) }}

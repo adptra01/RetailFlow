@@ -2,18 +2,30 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToTenant;
+use App\Models\Concerns\HasSyncIdentity;
+use App\Models\Concerns\JournalSyncChanges;
+use Database\Factories\SupplierFactory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Str;
 
 class Supplier extends Model
 {
-    protected $fillable = ['name', 'slug', 'contact_person', 'phone', 'email', 'address', 'description', 'balance'];
+    /** @use HasFactory<SupplierFactory> */
+    use BelongsToTenant, HasFactory, HasSyncIdentity, JournalSyncChanges, SoftDeletes;
+
+    protected $attributes = ['version' => 1];
+
+    protected $fillable = ['name', 'slug', 'contact_person', 'phone', 'email', 'address', 'description', 'balance_minor', 'tenant_id'];
 
     protected function casts(): array
     {
         return [
-            'balance' => 'decimal:2',
+            'balance_minor' => 'integer',
+            'version' => 'integer',
         ];
     }
 
@@ -39,5 +51,12 @@ class Supplier extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(SupplierPayment::class);
+    }
+
+    public function balance(): Attribute
+    {
+        return Attribute::make(
+            get: fn () => $this->balance_minor / 100,
+        );
     }
 }

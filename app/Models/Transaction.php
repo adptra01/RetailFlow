@@ -21,7 +21,7 @@ class Transaction extends Model
 
     protected $fillable = [
         'user_id', 'customer_id', 'customer_name', 'invoice_number', 'total_amount',
-        'paid_amount', 'change_amount', 'payment_method', 'payment_status', 'notes',
+        'paid_amount', 'change_amount', 'payment_method', 'payment_status', 'payment_verification', 'notes',
         'tenant_id', 'location_id', 'device_id', 'client_request_id',
         'subtotal_minor', 'discount_minor', 'total_minor', 'paid_minor', 'change_minor',
     ];

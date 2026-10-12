@@ -1,16 +1,23 @@
 <?php
 
 use App\Actions\Sales\CreateSale;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentVerification;
+use App\Exceptions\Payments\QrisNotConfigured;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
+use App\Exceptions\Sales\InvalidPaymentVerification;
 use App\Models\Category;
 use App\Models\Customer;
 use App\Models\Product;
 use App\Models\ProductUnit;
+use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Support\Money\Money;
+use App\Support\Qr\SvgQrCode;
 use Flux\Flux;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Livewire\WithPagination;
 
 use function Laravel\Folio\middleware;
@@ -32,7 +39,6 @@ state([
     'category_id' => (int) '',
     'productSearch' => '',
     'cart' => [],
-    'payment_method' => 'cash',
     'paid_amount' => 0,
     'discount_type' => 'none', // none | percent | nominal (FR-06)
     'discount_value' => 0,
@@ -46,6 +52,14 @@ state([
     'savedTransactionId' => null,
     'savedInvoiceNumber' => '',
 ]);
+
+/*
+ * Metode pembayaran diikat ke URL (dan bukan state biasa) agar pilihan QRIS
+ * dapat dialamatkan/diuji lewat GET, mis.
+ * /transactions/create?payment_method=qris_static. Ini juga membuat tautan
+ * kasir ke mode QRIS dapat disimpan/dibagikan.
+ */
+state(['payment_method' => PaymentMethod::Cash->value])->url();
 
 $categoryOptions = computed(fn () => Category::orderBy('name')->get());
 
@@ -97,14 +111,97 @@ $discountMinor = computed(function () {
 
 $totalMinor = computed(fn () => max(0, $this->subtotalMinor - $this->discountMinor));
 
-$changeMinor = computed(fn () => (int) round((float) ($this->paid_amount ?: 0)) - $this->totalMinor);
-
 $isCredit = computed(fn () => $this->changeMinor < 0);
 
-$openUnitSelector = function ($productId) {
+/*
+ * QRIS statis (FR-05): nominal QR sudah tetap, jadi "dibayar" = total secara
+ * konstruksi — kasir tidak mengetik nominal dan tidak ada kembalian. Semua
+ * perhitungan (kembalian, kredit, nominal yang dikirim ke domain) memakai
+ * `effectivePaidMinor` agar tampilan dan data tersimpan tidak pernah berbeda.
+ */
+$isQrisStatic = computed(fn () => $this->payment_method === PaymentMethod::QrisStatic->value);
+
+$effectivePaidMinor = computed(function () {
+    if ($this->isQrisStatic) {
+        return $this->totalMinor;
+    }
+
+    return Money::fromMajor((float) ($this->paid_amount ?: 0))->minor();
+});
+
+$changeMinor = computed(fn () => $this->effectivePaidMinor - $this->totalMinor);
+
+$qrisTenant = computed(function () {
+    $tenantId = auth()->user()?->tenant_id;
+
+    return $tenantId === null ? null : Tenant::find($tenantId);
+});
+
+$qrisConfigured = computed(fn () => (bool) $this->qrisTenant?->hasQrisConfigured());
+
+$qrisSvg = computed(function () {
+    $tenant = $this->qrisTenant;
+
+    if (! $tenant?->hasQrisConfigured()) {
+        return null;
+    }
+
+    return SvgQrCode::render(trim((string) $tenant->qris_payload), 240);
+});
+
+$openUnitSelector = function ($productId, $unitId = null) {
     $this->selectedProduct = Product::with('units')->findOrFail($productId);
-    $this->selectedUnitId = $this->selectedProduct->units()->where('is_active', true)->first()?->id;
+
+    $unit = null;
+    if ($unitId !== null) {
+        $unit = $this->selectedProduct->units()->where('is_active', true)->find($unitId);
+    }
+
+    $this->selectedUnitId = $unit?->id ?? $this->selectedProduct->units()->where('is_active', true)->first()?->id;
     $this->showUnitModal = true;
+};
+
+/*
+ * FR-03 barcode kamera: hasil decode dari browser dikirim ke sini.
+ * - selalu perbarui pencarian agar hasil scan terlihat di grid;
+ * - barcode produk yang cocok persis → buka pemilih satuan (alur "+");
+ * - barcode satuan (product_units.barcode) yang cocok → buka pemilih satuan
+ *   dengan satuan itu terpilih sejak awal;
+ * - tidak cocok → peringatan; kasir tetap bisa mencari/menambah manual.
+ */
+$scanBarcode = function (string $barcode) {
+    $barcode = trim($barcode);
+
+    if ($barcode === '') {
+        return;
+    }
+
+    $this->productSearch = $barcode;
+
+    $product = Product::query()
+        ->where('is_active', true)
+        ->where('barcode', $barcode)
+        ->first();
+
+    if ($product !== null) {
+        $this->openUnitSelector($product->id);
+
+        return;
+    }
+
+    $unit = ProductUnit::query()
+        ->where('is_active', true)
+        ->where('barcode', $barcode)
+        ->whereHas('product', fn ($q) => $q->where('is_active', true))
+        ->first();
+
+    if ($unit !== null) {
+        $this->openUnitSelector($unit->product_id, $unit->id);
+
+        return;
+    }
+
+    Flux::toast(variant: 'warning', text: __('Tidak ada produk aktif dengan barcode ":code".', ['code' => $barcode]));
 };
 
 $addToCart = function () {
@@ -191,11 +288,24 @@ $confirmSave = function () {
 
     $this->validate([
         'paid_amount' => 'required|numeric|min:0',
-        'payment_method' => 'required|string|in:cash,transfer,debit_card,credit_card',
+        'payment_method' => ['required', 'string', Rule::enum(PaymentMethod::class)],
         'discount_type' => 'required|string|in:none,percent,nominal',
         'discount_value' => 'nullable|numeric|min:0',
         'notes' => 'nullable|string|max:500',
     ]);
+
+    // FR-05: tidak ada pembayaran QRIS tanpa QRIS yang diunggah pemilik.
+    if ($this->isQrisStatic && ! $this->qrisConfigured) {
+        Flux::toast(variant: 'error', text: __('QRIS is not configured for this store.'));
+
+        return;
+    }
+
+    if ($this->isQrisStatic && $this->totalMinor <= 0) {
+        Flux::toast(variant: 'error', text: __('Add products before recording a QRIS payment.'));
+
+        return;
+    }
 
     // Credit sales need a customer (FR-07).
     if ($this->isCredit && ! $this->customer_id) {
@@ -224,10 +334,15 @@ $save = function () {
 
         $transaction = app(CreateSale::class)->handle([
             'user_id' => auth()->id(),
+            // Sesi web tidak mengikat TenantContext (lihat AuthenticateDevice untuk
+            // jalur perangkat), jadi tenant penjualan diambil dari kasir yang aktif.
+            // Tanpa ini penjualan dari POS akan tersimpan tanpa tenant.
+            'tenant_id' => auth()->user()?->tenant_id,
             'customer_id' => $this->customer_id,
             'customer_name' => $this->customer_name ?: 'Umum',
             'payment_method' => $this->payment_method,
-            'paid_minor' => Money::fromMajor((float) ($this->paid_amount ?: 0))->minor(),
+            'payment_verification' => PaymentVerification::CashierRecorded->value,
+            'paid_minor' => $this->effectivePaidMinor,
             'discount_percent' => $this->discount_type === 'percent' ? (float) $this->discount_value : null,
             'discount_minor' => $this->discount_type === 'nominal' ? (int) $this->discount_value : null,
             'client_request_id' => $this->client_request_id ?: null,
@@ -241,7 +356,7 @@ $save = function () {
         $this->savedTransactionId = $transaction->id;
         $this->savedInvoiceNumber = $transaction->invoice_number;
         $this->showSuccessModal = true;
-    } catch (InsufficientStock|InvalidPaymentAmount|\InvalidArgumentException $e) {
+    } catch (InsufficientStock|InvalidPaymentAmount|InvalidPaymentVerification|QrisNotConfigured|\InvalidArgumentException $e) {
         // Failure must never empty the cart (FR-04).
         $this->showConfirmModal = false;
         Flux::toast(variant: 'error', text: $e->getMessage());
@@ -252,15 +367,34 @@ $save = function () {
 
 <x-layouts::app :title="__('New Transaction')">
     @volt
-        <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl">
+        <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl"
+            x-data="{
+                scanning: false,
+                cameraMessage: '',
+                startScanning() {
+                    this.scanning = true;
+                    this.cameraMessage = '';
+                    const video = document.getElementById('pos-barcode-video');
+                    window.posBarcodeScanner?.open({
+                        video,
+                        onResult: (code) => {
+                            this.scanning = false;
+                            $wire.scanBarcode(code);
+                        },
+                        onError: () => {
+                            this.cameraMessage = '{{ __('Kamera tidak tersedia. Gunakan input manual.') }}';
+                        },
+                    });
+                },
+                stopScanning() {
+                    this.scanning = false;
+                    window.posBarcodeScanner?.close();
+                },
+            }">
             @php
-                $methodLabels = [
-                    'cash' => __('Cash'),
-                    'transfer' => __('Transfer'),
-                    'debit_card' => __('Debit Card'),
-                    'credit_card' => __('Credit Card'),
-                ];
-                $paymentMethods = ['cash', 'transfer', 'debit_card', 'credit_card'];
+                // Katalog FR-05 (sumber tunggal: enum PaymentMethod), termasuk
+                // QRIS statis. Label aman untuk nilai lama lewat labelFor().
+                $paymentMethods = \App\Enums\PaymentMethod::cases();
             @endphp
 
             <flux:breadcrumbs>
@@ -291,8 +425,12 @@ $save = function () {
                                     @endforeach
                                 </flux:select>
 
-                                <flux:input wire:model.live="productSearch" :label="__('Search')" type="search"
-                                    placeholder="{{ __('Search by name, SKU, or barcode...') }}" />
+                                <div class="flex items-end gap-2">
+                                    <flux:input wire:model.live="productSearch" :label="__('Search')" type="search"
+                                        placeholder="{{ __('Search by name, SKU, or barcode...') }}" class="flex-1" />
+                                    <flux:button icon="camera" class="shrink-0" x-on:click="startScanning()"
+                                        :title="__('Scan barcode dengan kamera')" :aria-label="__('Scan barcode dengan kamera')" />
+                                </div>
                             </div>
 
                             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -430,13 +568,46 @@ $save = function () {
                             <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800">
                                 <flux:heading size="lg">{{ __('Payment') }}</flux:heading>
                                 <div class="mt-4 space-y-3">
-                                    <flux:select wire:model="payment_method" :label="__('Method')">
+                                    <flux:select wire:model.live="payment_method" :label="__('Method')">
                                         @foreach ($paymentMethods as $method)
-                                            <flux:select.option value="{{ $method }}">{{ $methodLabels[$method] }}</flux:select.option>
+                                            <flux:select.option value="{{ $method->value }}">{{ $method->label() }}</flux:select.option>
                                         @endforeach
                                     </flux:select>
 
-                                    <flux:input wire:model.live="paid_amount" :label="__('Paid Amount')" type="number" step="0.01" min="0" />
+                                    @if ($this->isQrisStatic)
+                                        {{-- FR-05: QRIS statis = instruksi pembayaran; nominal terkunci --}}
+                                        <div class="rounded-lg border border-teal-200 bg-teal-50 p-3 dark:border-teal-700 dark:bg-teal-900/20">
+                                            @if ($this->qrisConfigured)
+                                                <p class="text-sm font-medium text-teal-800 dark:text-teal-200">{{ __('Scan this QRIS to pay') }}</p>
+                                                <div class="mt-2 flex items-start gap-4">
+                                                    <div class="shrink-0 rounded bg-white p-2">{!! $this->qrisSvg !!}</div>
+                                                    <div class="space-y-1 text-sm">
+                                                        <p class="font-medium">{{ $this->qrisTenant?->qrisMerchantDisplayName() }}</p>
+                                                        <p>{{ __('Amount') }}: <span class="font-medium">{{ Number::currency($this->totalMinor, 'IDR', 'id') }}</span></p>
+                                                        <p class="text-xs text-zinc-600 dark:text-zinc-300">
+                                                            {{ __('The cashier records this payment; the system does not automatically verify it.') }}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            @else
+                                                <p class="text-sm font-medium text-red-700 dark:text-red-300">
+                                                    {{ __('QRIS is not configured for this store. Ask the owner to upload it in Payment Settings.') }}
+                                                </p>
+                                            @endif
+                                        </div>
+                                    @endif
+
+                                    @if ($this->isQrisStatic && $this->qrisConfigured)
+                                        <div>
+                                            <flux:label>{{ __('Paid Amount') }}</flux:label>
+                                            <p class="mt-1 font-medium">
+                                                {{ Number::currency($this->effectivePaidMinor, 'IDR', 'id') }}
+                                                <span class="text-xs text-zinc-500">({{ __('locked to the total') }})</span>
+                                            </p>
+                                        </div>
+                                    @elseif (! $this->isQrisStatic)
+                                        <flux:input wire:model.live="paid_amount" :label="__('Paid Amount')" type="number" step="0.01" min="0" />
+                                    @endif
 
                                     <div class="grid grid-cols-2 gap-3">
                                         <flux:select wire:model="discount_type" :label="__('Discount')">
@@ -580,7 +751,7 @@ $save = function () {
                     <div class="grid grid-cols-3 gap-4 text-sm">
                         <div>
                             <span class="text-zinc-500">{{ __('Payment') }}</span>
-                            <p class="font-medium">{{ $methodLabels[$payment_method] ?? $payment_method }}</p>
+                            <p class="font-medium">{{ \App\Enums\PaymentMethod::labelFor($payment_method) }}</p>
                         </div>
                         <div>
                             <span class="text-zinc-500">{{ __('Paid') }}</span>
@@ -638,6 +809,24 @@ $save = function () {
                     </div>
                 </div>
             </flux:modal>
+
+            {{-- Camera Barcode Scanner Overlay (FR-03 §20). Decode berjalan di browser;
+                 bila kamera tidak tersedia/tolak izin, input manual tetap tersedia. --}}
+            <div x-show="scanning" x-cloak x-transition.opacity.duration.200ms
+                class="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4"
+                x-on:click.self="stopScanning()">
+                <div class="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-zinc-800">
+                    <div class="mb-4 flex items-center justify-between">
+                        <flux:heading size="md">{{ __('Scan Barcode') }}</flux:heading>
+                        <flux:button variant="ghost" size="sm" icon="x-mark" x-on:click="stopScanning()" />
+                    </div>
+                    <video id="pos-barcode-video" class="mx-auto aspect-video w-full rounded-xl bg-zinc-950 object-cover" playsinline muted autoplay></video>
+                    <p x-show="cameraMessage" x-text="cameraMessage" class="mt-3 text-center text-sm text-zinc-500"></p>
+                    <div class="mt-4 flex justify-end gap-2">
+                        <flux:button variant="primary" x-on:click="stopScanning()">{{ __('Close') }}</flux:button>
+                    </div>
+                </div>
+            </div>
         </div>
     @endvolt
 </x-layouts::app>

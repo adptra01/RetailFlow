@@ -1,8 +1,8 @@
 <?php
 
+use App\Actions\Purchases\CreatePurchaseOrder;
 use App\Models\Product;
 use App\Models\ProductUnit;
-use App\Models\PurchaseOrder;
 use App\Models\Supplier;
 use Flux\Flux;
 use Livewire\WithPagination;
@@ -11,10 +11,12 @@ use function Laravel\Folio\middleware;
 use function Laravel\Folio\name;
 use function Livewire\Volt\computed;
 use function Livewire\Volt\state;
+use function Livewire\Volt\uses;
 
 name('purchases.create');
 middleware('auth');
 middleware('verified');
+uses(WithPagination::class);
 
 state([
     'supplier_id' => null,
@@ -24,6 +26,8 @@ state([
     'showUnitModal' => false,
     'selectedProduct' => null,
     'selectedUnitId' => null,
+    'discount_minor' => 0,
+    'client_request_id' => null,
 ]);
 
 $supplierOptions = computed(fn () => Supplier::orderBy('name')->get());
@@ -42,7 +46,8 @@ $products = computed(function () {
         ->get();
 });
 
-$totalAmount = computed(fn () => collect($this->cart)->sum('subtotal'));
+$subtotalMinor = computed(fn () => collect($this->cart)->sum(fn ($item) => $item['subtotal_minor']));
+$totalMinor = computed(fn () => $this->subtotalMinor - $this->discount_minor);
 
 $openUnitSelector = function ($productId) {
     $this->selectedProduct = Product::with('units')->findOrFail($productId);
@@ -62,11 +67,13 @@ $addToCart = function () {
     foreach ($this->cart as &$item) {
         if ($item['cart_key'] === $cartKey) {
             $item['quantity']++;
-            $item['subtotal'] = $item['quantity'] * $item['unit_price'];
+            $item['subtotal_minor'] = $item['quantity'] * $item['unit_price_minor'];
             $this->showUnitModal = false;
             return;
         }
     }
+
+    $unitPriceMinor = (int) round(($unit->purchase_price_minor ?? $product->buy_price_minor ?: 0));
 
     $this->cart[] = [
         'cart_key' => $cartKey,
@@ -74,11 +81,12 @@ $addToCart = function () {
         'product_unit_id' => $unit->id,
         'unit_name' => $unit->name,
         'unit_abbreviation' => $unit->abbreviation,
-        'conversion_factor' => $unit->conversion_factor,
+        'conversion_factor' => (float) $unit->conversion_factor,
         'name' => $product->name,
-        'unit_price' => (float) ($unit->purchase_price ?: $product->buy_price),
+        'unit_price_minor' => $unitPriceMinor,
         'quantity' => 1,
-        'subtotal' => (float) ($unit->purchase_price ?: $product->buy_price),
+        'subtotal_minor' => $unitPriceMinor,
+        'discount_minor' => 0,
     ];
 
     $this->showUnitModal = false;
@@ -88,14 +96,21 @@ $addToCart = function () {
 $updateQty = function ($index, $qty) {
     if (isset($this->cart[$index])) {
         $this->cart[$index]['quantity'] = max(1, (int) $qty);
-        $this->cart[$index]['subtotal'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price'];
+        $this->cart[$index]['subtotal_minor'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price_minor'];
     }
 };
 
 $updatePrice = function ($index, $price) {
     if (isset($this->cart[$index])) {
-        $this->cart[$index]['unit_price'] = (float) max(0, $price);
-        $this->cart[$index]['subtotal'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price'];
+        $this->cart[$index]['unit_price_minor'] = (int) max(0, round($price * 100));
+        $this->cart[$index]['subtotal_minor'] = $this->cart[$index]['quantity'] * $this->cart[$index]['unit_price_minor'];
+    }
+};
+
+$updateItemDiscount = function ($index, $discount) {
+    if (isset($this->cart[$index])) {
+        $this->cart[$index]['discount_minor'] = (int) max(0, round($discount * 100));
+        $this->cart[$index]['subtotal_minor'] = ($this->cart[$index]['unit_price_minor'] - $this->cart[$index]['discount_minor']) * $this->cart[$index]['quantity'];
     }
 };
 
@@ -117,33 +132,45 @@ $save = function ($status) {
         return;
     }
 
-    $validated = $this->validate([
-        'supplier_id' => 'required|exists:suppliers,id',
-        'notes' => 'nullable|string|max:500',
-    ]);
-
-    $po = PurchaseOrder::create([
-        'supplier_id' => $this->supplier_id,
-        'user_id' => auth()->id(),
-        'status' => $status,
-        'total_amount' => $this->totalAmount,
-        'notes' => $this->notes,
-    ]);
-
-    foreach ($this->cart as $item) {
-        $po->items()->create([
+    $items = array_map(function ($item) {
+        return [
             'product_id' => $item['product_id'],
             'product_unit_id' => $item['product_unit_id'],
             'quantity' => $item['quantity'],
-            'unit_price' => $item['unit_price'],
-            'subtotal' => $item['subtotal'],
-            'received_quantity' => 0,
+            'unit_price_minor' => $item['unit_price_minor'],
+            'discount_minor' => $item['discount_minor'] ?? 0,
+        ];
+    }, $this->cart);
+
+    try {
+        (new CreatePurchaseOrder())->handle([
+            'supplier_id' => $this->supplier_id,
+            'user_id' => auth()->id(),
+            'items' => $items,
+            'notes' => $this->notes,
+            'discount_minor' => $this->discount_minor,
+            'status' => $status,
+            'client_request_id' => $this->client_request_id ?? (string) \Illuminate\Support\Str::uuid(),
+            'location_id' => auth()->user()?->location_id,
+            'device_id' => auth()->user()?->device_id,
+            'enqueue_for_sync' => true,
         ]);
+    } catch (\Illuminate\Database\QueryException $e) {
+        if ($this->isIdempotencyViolation($e)) {
+            Flux::toast(variant: 'success', text: __('Purchase order already exists.'));
+            $this->redirect('/purchases', navigate: true);
+            return;
+        }
+        throw $e;
     }
 
     Flux::toast(variant: 'success', text: __('Purchase order created.'));
+    $this->redirect('/purchases', navigate: true);
+};
 
-    $this->redirect('/purchases/' . $po->id, navigate: true);
+$isIdempotencyViolation = function (\Illuminate\Database\QueryException $e): bool {
+    $code = (int) ($e->errorInfo[1] ?? 0);
+    return $code === 1062 || $code === 1555 || str_contains($e->getMessage(), 'client_request_id');
 };
 
 ?>
@@ -152,169 +179,127 @@ $save = function ($status) {
     @volt
         <div class="flex h-full w-full flex-1 flex-col gap-6 rounded-xl">
             <flux:breadcrumbs>
-                <flux:breadcrumbs.item href="#">{{ __('Home') }}</flux:breadcrumbs.item>
+                <flux:breadcrumbs.item href="{{ route('dashboard') }}">{{ __('Home') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item href="/purchases">{{ __('Purchase Orders') }}</flux:breadcrumbs.item>
                 <flux:breadcrumbs.item>{{ __('Create') }}</flux:breadcrumbs.item>
             </flux:breadcrumbs>
 
-            <div>
-                <flux:heading size="xl">{{ __('Create Purchase Order') }}</flux:heading>
-                <flux:subheading>{{ __('Order products from supplier.') }}</flux:subheading>
+            <div class="flex items-center justify-between">
+                <div>
+                    <flux:heading size="xl">{{ __('Create Purchase Order') }}</flux:heading>
+                    <flux:subheading>{{ __('Add products and save as draft or submit') }}</flux:subheading>
+                </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <div class="space-y-6 lg:col-span-2">
-                    {{-- Supplier --}}
-                    <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
-                        <flux:select wire:model="supplier_id" :label="__('Supplier')" placeholder="{{ __('Pilih supplier...') }}" required>
-                            @foreach ($this->supplierOptions as $supplier)
-                                <flux:select.option value="{{ $supplier->id }}">{{ $supplier->name }}</flux:select.option>
-                            @endforeach
-                        </flux:select>
+            <div class="grid lg:grid-cols-3 gap-6">
+                {{-- Product Search & Cart --}}
+                <div class="lg:col-span-2 flex flex-col gap-4">
+                    <flux:input size="md" wire:model.live.debounce.300ms="search" type="search"
+                        placeholder="{{ __('Search products (name, SKU, barcode)...') }}" />
 
-                        <div class="mt-5">
-                            <flux:textarea wire:model="notes" :label="__('Notes')" placeholder="{{ __('Notes for this order...') }}" rows="2" />
-                        </div>
-                    </div>
-
-                    {{-- Product Search --}}
-                    <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
-                        <div class="mb-4">
-                            <flux:heading size="lg">{{ __('Products') }}</flux:heading>
-                            <flux:subheading>{{ __('Search and add products to this order.') }}</flux:subheading>
-                        </div>
-
-                        <flux:input wire:model.live="search" type="search" placeholder="{{ __('Search products by name, SKU, or barcode...') }}" />
-
-                        @if ($this->search && $this->products->isNotEmpty())
-                            <div class="mt-3 divide-y divide-zinc-100 dark:divide-zinc-700">
-                                @foreach ($this->products as $product)
-                                    <div class="flex items-center justify-between py-2">
-                                        <div>
-                                            <p class="text-sm font-medium">{{ $product->name }}</p>
-                                            <p class="text-xs text-zinc-500">SKU: {{ $product->sku }}</p>
-                                        </div>
-                                        <flux:button size="xs" variant="primary" wire:click="openUnitSelector({{ $product->id }})">
-                                            {{ __('Add') }}
-                                        </flux:button>
+                    <div class="flex flex-wrap gap-2">
+                        @foreach ($this->cart as $index => $item)
+                            <flux:card class="w-64 flex-shrink-0">
+                                <div class="p-3">
+                                    <p class="font-medium truncate">{{ $item['name'] }}</p>
+                                    <p class="text-xs text-zinc-500">{{ $item['unit_abbreviation'] }}</p>
+                                    <div class="flex items-center gap-2 mt-2">
+                                        <flux:input wire:model="cart.{{ $index }}.quantity" type="number" min="1" step="1"
+                                            class="w-16" wire:change="updateQty({{ $index }}, \$event.target.value)" />
+                                        <flux:input wire:model="cart.{{ $index }}.unit_price_minor" type="number" step="1" min="0"
+                                            class="w-24" wire:change="updatePrice({{ $index }}, \$event.target.value)" />
+                                        <flux:button variant="ghost" size="sm" icon="trash" class="text-red-500"
+                                            wire:click="removeItem({{ $index }})" />
                                     </div>
-                                @endforeach
-                            </div>
-                        @elseif ($this->search)
-                            <p class="mt-3 text-sm text-zinc-500">{{ __('No products found.') }}</p>
-                        @endif
+                                    <p class="text-xs text-zinc-500 mt-1">
+                                        Subtotal: {{ Number::currency($item['subtotal_minor'], 'IDR', 'id') }}
+                                    </p>
+                                </div>
+                            </flux:card>
+                        @endforeach
                     </div>
 
-                    {{-- Cart Items --}}
-                    @if (count($this->cart) > 0)
-                        <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
-                            <flux:heading size="lg">{{ __('Order Items') }}</flux:heading>
-                            <div class="mt-4 overflow-x-auto">
-                                <table class="w-full text-sm">
-                                    <thead>
-                                        <tr class="border-b text-left text-xs font-medium text-zinc-500 dark:border-zinc-700">
-                                            <th class="pb-2 pr-4">{{ __('Product') }}</th>
-                                            <th class="pb-2 pr-4">{{ __('Unit') }}</th>
-                                            <th class="pb-2 pr-4">{{ __('Qty') }}</th>
-                                            <th class="pb-2 pr-4">{{ __('Price') }}</th>
-                                            <th class="pb-2 pr-4 text-right">{{ __('Subtotal') }}</th>
-                                            <th class="pb-2"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach ($this->cart as $index => $item)
-                                            <tr class="border-b border-zinc-50 dark:border-zinc-800">
-                                                <td class="py-2 pr-4 font-medium">{{ $item['name'] }}</td>
-                                                <td class="py-2 pr-4 text-xs text-zinc-500">{{ $item['unit_abbreviation'] }}</td>
-                                                <td class="py-2 pr-4">
-                                                    <input type="number" min="1" value="{{ $item['quantity'] }}"
-                                                        wire:change="updateQty({{ $index }}, $event.target.value)"
-                                                        class="w-16 rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-700">
-                                                </td>
-                                                <td class="py-2 pr-4">
-                                                    <input type="number" step="0.01" min="0" value="{{ $item['unit_price'] }}"
-                                                        wire:change="updatePrice({{ $index }}, $event.target.value)"
-                                                        class="w-24 rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-700">
-                                                </td>
-                                                <td class="py-2 pr-4 text-right font-medium">{{ Number::currency($item['subtotal'], 'IDR', 'id') }}</td>
-                                                <td class="py-2">
-                                                    <button type="button" wire:click="removeItem({{ $index }})"
-                                                        class="text-xs text-red-500 hover:text-red-700">{{ __('Remove') }}</button>
-                                                </td>
-                                            </tr>
-                                        @endforeach
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
+                    @if (empty($this->cart))
+                        <p class="text-zinc-500 text-center py-8">{{ __('No products added yet. Search and add products to the cart.') }}</p>
                     @endif
                 </div>
 
-                {{-- Summary --}}
-                <div class="lg:col-span-1">
-                    <div class="sticky top-6 space-y-5">
-                        <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800">
-                            <flux:heading size="lg">{{ __('Summary') }}</flux:heading>
-                            <div class="mt-4 space-y-3">
-                                <div class="flex justify-between text-sm">
-                                    <span class="text-zinc-500">{{ __('Items') }}</span>
-                                    <span class="font-medium">{{ count($this->cart) }}</span>
+                {{-- Order Summary --}}
+                <div class="space-y-4">
+                    <flux:card>
+                        <div class="p-4 space-y-4">
+                            <flux:select wire:model="supplier_id" label="{{ __('Supplier') }}" searchable required>
+                                <option value="">{{ __('Select supplier') }}</option>
+                                @foreach ($this->supplierOptions as $supplier)
+                                    <option value="{{ $supplier->id }}">{{ $supplier->name }}</option>
+                                @endforeach
+                            </flux:select>
+
+                            <flux:textarea wire:model="notes" label="{{ __('Notes') }}" rows="3" />
+
+                            <div class="grid grid-cols-2 gap-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                                <div>
+                                    <span class="text-zinc-500 text-sm">{{ __('Subtotal') }}</span>
+                                    <div class="font-mono text-lg">{{ Number::currency($this->subtotalMinor, 'IDR', 'id') }}</div>
                                 </div>
-                                <div class="flex justify-between border-t pt-3 text-base font-bold dark:border-zinc-700">
-                                    <span>{{ __('Total') }}</span>
-                                    <span class="text-blue-600">{{ Number::currency($this->totalAmount, 'IDR', 'id') }}</span>
+                                <div>
+                                    <span class="text-zinc-500 text-sm">{{ __('Discount') }}</span>
+                                    <flux:input wire:model="discount_minor" type="number" step="1" min="0"
+                                        class="w-full" placeholder="0" />
                                 </div>
                             </div>
-                        </div>
 
-                        <div class="flex flex-col gap-2">
-                            <flux:button variant="primary" wire:click="submitPO" class="w-full justify-center" :disabled="empty($this->cart) || !$this->supplier_id">
-                                {{ __('Submit PO') }}
-                            </flux:button>
-                            <flux:button variant="filled" wire:click="saveDraft" class="w-full justify-center" :disabled="empty($this->cart) || !$this->supplier_id">
-                                {{ __('Save as Draft') }}
-                            </flux:button>
-                            <flux:button variant="ghost" href="/purchases" class="w-full justify-center">
-                                {{ __('Cancel') }}
-                            </flux:button>
+                            <div class="text-right pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                                <span class="text-zinc-500">{{ __('Total') }}</span>
+                                <div class="font-mono text-xl text-green-600 dark:text-green-400">
+                                    {{ Number::currency($this->totalMinor, 'IDR', 'id') }}
+                                </div>
+                            </div>
+
+                            <div class="flex gap-2 pt-4">
+                                <flux:button variant="filled" wire:click="saveDraft" class="flex-1" :disabled="empty($cart)">
+                                    {{ __('Save Draft') }}
+                                </flux:button>
+                                <flux:button variant="primary" wire:click="submitPO" class="flex-1" :disabled="empty($cart)">
+                                    {{ __('Submit PO') }}
+                                </flux:button>
+                            </div>
                         </div>
-                    </div>
+                    </flux:card>
                 </div>
             </div>
 
             {{-- Unit Selector Modal --}}
             <flux:modal wire:model.self="showUnitModal" class="max-w-md">
-                @if ($selectedProduct)
-                    <form wire:submit="addToCart" class="space-y-6">
-                        <div>
-                            <flux:heading size="lg">{{ __('Pilih Satuan') }}</flux:heading>
-                            <flux:subheading>{{ $selectedProduct->name }}</flux:subheading>
+                <div class="space-y-4">
+                    <flux:heading size="lg">{{ __('Select Unit') }}</flux:heading>
+                    @if ($this->selectedProduct)
+                        <p class="font-medium">{{ $this->selectedProduct->name }}</p>
+                        <div class="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto">
+                            @foreach ($this->selectedProduct->units as $unit)
+                                @if ($unit->is_active)
+                                    <flux:button variant="outline" class="w-full"
+                                        wire:click="$set('selectedUnitId', {{ $unit->id }})"
+                                        wire:click="addToCart">
+                                        {{ $unit->name }} ({{ $unit->abbreviation }})
+                                        @if ($unit->purchase_price_minor > 0)
+                                            <span class="ml-2 text-xs text-zinc-500">
+                                                {{ Number::currency($unit->purchase_price_minor, 'IDR', 'id') }}
+                                            </span>
+                                        @elseif ($this->selectedProduct->buy_price_minor > 0)
+                                            <span class="ml-2 text-xs text-zinc-500">
+                                                {{ Number::currency($this->selectedProduct->buy_price_minor, 'IDR', 'id') }}
+                                            </span>
+                                        @endif
+                                    </flux:button>
+                                @endif
+                            @endforeach
                         </div>
-
-                        <div class="space-y-2">
-                            @php $activeUnits = $selectedProduct->units()->where('is_active', true)->get(); @endphp
-                            @forelse ($activeUnits as $unit)
-                                <label wire:key="unit-{{ $unit->id }}" class="flex cursor-pointer items-center gap-3 rounded-lg border border-zinc-200 p-3 transition hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50 dark:border-zinc-700 dark:has-[:checked]:border-blue-500 dark:has-[:checked]:bg-blue-900/20">
-                                    <input type="radio" name="unit" value="{{ $unit->id }}" wire:model="selectedUnitId" class="h-4 w-4 text-blue-600">
-                                    <div class="flex-1">
-                                        <p class="text-sm font-medium">{{ $unit->name }} ({{ $unit->abbreviation }})</p>
-                                        <p class="text-xs text-zinc-500">{{ Number::currency($unit->purchase_price ?: $selectedProduct->buy_price, 'IDR', 'id') }}</p>
-                                    </div>
-                                    @if ($unit->is_base)
-                                        <flux:badge size="xs" color="blue" inset="top bottom">{{ __('Base') }}</flux:badge>
-                                    @endif
-                                </label>
-                            @empty
-                                <p class="text-sm text-zinc-500">{{ __('No active units for this product.') }}</p>
-                            @endforelse
-                        </div>
-
-                        <div class="flex justify-end gap-2">
-                            <flux:modal.close><flux:button variant="filled">{{ __('Cancel') }}</flux:button></flux:modal.close>
-                            <flux:button variant="primary" type="submit">{{ __('Add') }}</flux:button>
-                        </div>
-                    </form>
-                @endif
+                    @endif
+                    <div class="flex justify-end">
+                        <flux:modal.close><flux:button variant="filled">{{ __('Cancel') }}</flux:button></flux:modal.close>
+                    </div>
+                </div>
             </flux:modal>
         </div>
     @endvolt

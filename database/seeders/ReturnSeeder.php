@@ -3,7 +3,6 @@
 namespace Database\Seeders;
 
 use App\Models\Customer;
-use App\Models\Product;
 use App\Models\ProductUnit;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
@@ -22,7 +21,9 @@ class ReturnSeeder extends Seeder
     public function run(): void
     {
         $users = User::all();
-        if ($users->isEmpty()) return;
+        if ($users->isEmpty()) {
+            return;
+        }
 
         // Sales Returns
         if (SalesReturn::count() === 0) {
@@ -30,12 +31,14 @@ class ReturnSeeder extends Seeder
 
             foreach ($transactions as $transaction) {
                 $items = TransactionItem::where('transaction_id', $transaction->id)->get();
-                if ($items->isEmpty()) continue;
+                if ($items->isEmpty()) {
+                    continue;
+                }
 
                 $returnItems = $items->random(min(rand(1, 2), $items->count()));
                 $total = 0;
                 $return = SalesReturn::create([
-                    'return_number' => 'RTS-' . $transaction->created_at->format('YmdHis') . '-' . strtoupper(substr(uniqid(), -4)),
+                    'return_number' => 'RTS-'.$transaction->created_at->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
                     'transaction_id' => $transaction->id,
                     'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->id,
                     'total' => 0,
@@ -64,7 +67,9 @@ class ReturnSeeder extends Seeder
                     ]);
                 }
 
-                if ($total > 0) $return->update(['total' => $total]);
+                if ($total > 0) {
+                    $return->update(['total' => $total]);
+                }
             }
         }
 
@@ -75,12 +80,14 @@ class ReturnSeeder extends Seeder
 
             foreach ($purchaseOrders as $po) {
                 $items = PurchaseOrderItem::where('purchase_order_id', $po->id)->get();
-                if ($items->isEmpty()) continue;
+                if ($items->isEmpty()) {
+                    continue;
+                }
 
                 $returnItems = $items->random(min(rand(1, 2), $items->count()));
                 $total = 0;
                 $return = PurchaseReturn::create([
-                    'return_number' => 'RTP-' . $po->created_at->format('YmdHis') . '-' . strtoupper(substr(uniqid(), -4)),
+                    'return_number' => 'RTP-'.$po->created_at->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
                     'purchase_order_id' => $po->id,
                     'supplier_id' => $po->supplier_id ?? Supplier::inRandomOrder()->first()?->id,
                     'total' => 0,
@@ -108,10 +115,12 @@ class ReturnSeeder extends Seeder
                     ]);
                 }
 
-                if ($total > 0) $return->update(['total' => $total]);
+                if ($total > 0) {
+                    $return->update(['total' => $total]);
+                }
             }
         }
 
-        $this->command->info('Created returns: ' . SalesReturn::count() . ' sales, ' . PurchaseReturn::count() . ' purchases.');
+        $this->command->info('Created returns: '.SalesReturn::count().' sales, '.PurchaseReturn::count().' purchases.');
     }
 }

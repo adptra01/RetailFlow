@@ -16,7 +16,9 @@ class PaymentSeeder extends Seeder
     public function run(): void
     {
         $users = User::all();
-        if ($users->isEmpty()) return;
+        if ($users->isEmpty()) {
+            return;
+        }
 
         // Customer payments (for credit transactions)
         if (CustomerPayment::count() === 0) {
@@ -25,7 +27,9 @@ class PaymentSeeder extends Seeder
 
             foreach ($creditTransactions as $transaction) {
                 $remaining = $transaction->total_amount - $transaction->paid_amount;
-                if ($remaining <= 0) continue;
+                if ($remaining <= 0) {
+                    continue;
+                }
 
                 $payAmount = $remaining > 0
                     ? rand(0, 1)
@@ -33,7 +37,9 @@ class PaymentSeeder extends Seeder
                         : round($remaining * rand(5, 10) / 10, -3)
                     : 0;
 
-                if ($payAmount <= 0) continue;
+                if ($payAmount <= 0) {
+                    continue;
+                }
 
                 CustomerPayment::create([
                     'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->id,
@@ -56,7 +62,9 @@ class PaymentSeeder extends Seeder
             $created = 0;
 
             foreach ($purchaseOrders as $po) {
-                if ($po->total_amount <= 0) continue;
+                if ($po->total_amount <= 0) {
+                    continue;
+                }
 
                 $payAmount = rand(0, 1)
                     ? $po->total_amount
@@ -68,7 +76,7 @@ class PaymentSeeder extends Seeder
                     'amount' => $payAmount,
                     'payment_date' => ($po->created_at ?? now())->addDays(rand(1, 14)),
                     'payment_method' => fake()->randomElement(['cash', 'transfer']),
-                    'notes' => rand(0, 1) ? 'Pembayaran PO #' . $po->order_number : null,
+                    'notes' => rand(0, 1) ? 'Pembayaran PO #'.$po->order_number : null,
                     'user_id' => $users->random()->id,
                 ]);
                 $created++;

@@ -17,6 +17,7 @@ class TransactionSeeder extends Seeder
 
         if ($products->isEmpty()) {
             $this->command->warn('Tidak ada produk, lewati TransactionSeeder.');
+
             return;
         }
 
@@ -39,7 +40,9 @@ class TransactionSeeder extends Seeder
             foreach ($selectedProducts as $product) {
                 $quantity = rand(1, 3);
                 $baseUnit = $product->units()->where('is_base', true)->first() ?? $product->units()->first();
-                if (!$baseUnit) continue;
+                if (! $baseUnit) {
+                    continue;
+                }
 
                 $unitPrice = $baseUnit->price > 0 ? $baseUnit->price : $product->price;
                 $subtotal = $quantity * $unitPrice;
@@ -55,7 +58,9 @@ class TransactionSeeder extends Seeder
                 ];
             }
 
-            if (empty($items)) continue;
+            if (empty($items)) {
+                continue;
+            }
 
             $paidAmount = $totalAmount + rand(0, 3) * 5000;
             $createdAt = now()->subDays(rand(0, 30))->setTime(rand(7, 21), rand(0, 59));
