@@ -104,6 +104,7 @@ class CreateSale
      *     promotion_name?: string|null,
      *     promotion_discount_minor?: int|null,
      *     client_request_id?: string|null,
+     *     uuid?: string|null,
      *     user_id: int,
      *     customer_id?: int|null,
      *     customer_name?: string|null,
@@ -195,7 +196,24 @@ class CreateSale
             throw new InvalidPaymentAmount('Pilih pelanggan untuk penjualan kredit.');
         }
 
-        $transaction = Transaction::create([
+        $transaction = new Transaction;
+
+        // §17.1/§11.1: identitas sinkronisasi stabil. Bila penjualan berasal
+        // dari perangkat, uuid lokal perangkat dipakai apa adanya sehingga
+        // record di server dan di perangkat menjadi identitas yang sama — dan
+        // operasi lanjutan (mis. void) dapat menunjuk penjualan ini.
+        // Set langsung, bukan mass assignment: `uuid` sengaja di luar `$fillable`.
+        if (isset($data['uuid']) && $data['uuid'] !== '') {
+            $uuid = (string) $data['uuid'];
+
+            if (! Str::isUuid($uuid)) {
+                throw new \InvalidArgumentException('uuid penjualan tidak valid.');
+            }
+
+            $transaction->uuid = $uuid;
+        }
+
+        $transaction->fill([
             'user_id' => $data['user_id'],
             'customer_id' => $customer?->id,
             'customer_name' => $data['customer_name'] ?? $customer?->name ?? '',
@@ -225,6 +243,8 @@ class CreateSale
             'location_id' => $data['location_id'] ?? null,
             'device_id' => $data['device_id'] ?? null,
         ]);
+
+        $transaction->save();
 
         foreach ($items as $item) {
             $product = $products->get($item['product_id']);

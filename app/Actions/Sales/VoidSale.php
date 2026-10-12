@@ -4,6 +4,7 @@ namespace App\Actions\Sales;
 
 use App\Enums\AuditAction;
 use App\Enums\Permission;
+use App\Enums\SyncOperationType;
 use App\Exceptions\Sales\VoidNotAllowed;
 use App\Models\AuditLog;
 use App\Models\Customer;
@@ -14,6 +15,7 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Support\Auth\ActionAuthorizer;
 use App\Support\Money\Money;
+use App\Support\Sync\Outbox;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Support\Facades\DB;
 
@@ -38,7 +40,11 @@ use Illuminate\Support\Facades\DB;
  *    dan saldo pelanggan dikoreksi. Bila sudah ada pembayaran piutang, void
  *    ditolak sampai koreksinya diselesaikan — bukan menghapus jejak pembayaran;
  *  - **jejak audit**: satu baris `sale.voided` dengan aktor, perangkat, alasan,
- *    dan ringkasan apa yang berubah (FR-12).
+ *    dan ringkasan apa yang berubah (FR-12);
+ *  - **siap offline (§11.1/§11.3)**: bila pembatalan berasal dari perangkat
+ *    (`device_id` ada), satu operasi `sale`/`update` dimasukkan ke outbox
+ *    perangkat di dalam transaksi yang sama, sehingga pembatalan yang
+ *    dilakukan tanpa jaringan ikut terkirim ke server.
  */
 class VoidSale
 {
@@ -51,6 +57,8 @@ class VoidSale
      *     tenant_id?: string|null,
      *     device_id?: string|null,
      *     restore_stock?: bool|null,
+     *     client_request_id?: string|null,
+     *     enqueue_for_sync?: bool,
      * }  $data
      * @return array{
      *     transaction: Transaction,
@@ -120,8 +128,13 @@ class VoidSale
                     'stock_restored' => $restoreStock,
                     'restored_items' => $restoredItems,
                     'receivable_voided' => $receivableVoided,
+                    // Idempotensi perangkat (§11.1): id operasi yang memicu
+                    // pembatalan ini, agar terkirim ulang tidak berlipat.
+                    'client_request_id' => $data['client_request_id'] ?? null,
                 ],
             ]);
+
+            $this->enqueueForSync($transaction, $data, $recordTenantId, $restoreStock);
 
             return [
                 'transaction' => $transaction,
@@ -131,6 +144,40 @@ class VoidSale
                 'receivable_voided' => $receivableVoided,
             ];
         });
+    }
+
+    /**
+     * §11.1/§11.3: pembatalan dari perangkat ikut masuk outbox perangkat agar
+     * terkirim ke server bila perangkat kembali online. Dipanggil DI DALAM
+     * transaksi domain sehingga entri outbox hilang bila void dibatalkan.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function enqueueForSync(Transaction $transaction, array $data, ?string $tenantId, bool $restoreStock): void
+    {
+        $deviceId = $data['device_id'] ?? null;
+
+        if ($deviceId === null || $tenantId === null) {
+            return;
+        }
+
+        if (($data['enqueue_for_sync'] ?? true) === false) {
+            return;
+        }
+
+        (new Outbox($tenantId))->enqueue(
+            (string) $deviceId,
+            'sale',
+            $transaction->uuid,
+            SyncOperationType::Update,
+            [
+                'void' => true,
+                'user_id' => $data['user_id'],
+                'reason' => $data['reason'] ?? null,
+                'restore_stock' => $restoreStock,
+            ],
+            $data['client_request_id'] ?? null,
+        );
     }
 
     /**

@@ -1,3 +1,33 @@
+# Rebuild POS Universal — Fase 5: Pembatalan dari Perangkat & Identitas Penjualan (§11.1–§11.3, §17.1, Increment 44) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§5.1 MVP #15 "Status offline/online dan antrean sinkronisasi"; §11.1 "Operasi lokal tidak boleh menunggu server", "aman terhadap pengiriman ulang"; §11.2 struktur outbox; §11.3 langkah 3–7; §17.1 identitas sinkronisasi; §17.4 pembatalan idempoten; §12 tenant dari perangkat).
+
+## Latar
+Increment 43 menyediakan void dari sisi web. Namun §17.4 juga menuntut pembatalan berjalan saat perangkat **offline**: perangkat yang membatalkan penjualan tanpa jaringan harus dapat mengirim pembatalan itu, dan penerapannya di server harus idempoten agar stok tidak dikembalikan dua kali. Sebelum ini `SaleSyncHandler` hanya menerima `sale`/`create`, sehingga operasi pembatalan perangkat tidak dapat diterapkan sama sekali. Sekaligus ditemukan celah §17.1: penjualan yang dikirim perangkat **tidak** memakai uuid perangkat, sehingga identitas penjualan berbeda antara server dan perangkat (operasi lanjutan yang menunjuk `entity_id` perangkat selalu gagal).
+
+## Perubahan
+
+### Identitas penjualan dari perangkat (§17.1/§11.1)
+- **`Sales\CreateSale`** — menerima `uuid` opsional (aditif): bila ada, uuid lokal perangkat dipakai apa adanya sebagai identitas penjualan di server, sehingga server dan perangkat memiliki identitas yang sama. Divalidasi (`Str::isUuid`), di-set langsung pada model sebelum `save()` (di luar `$fillable`, satu baris jurnal `created` — tidak menghasilkan record kembar di perangkat). Tanpa `uuid`, perilaku lama (uuid7 server) tidak berubah.
+
+### Pembatalan dari perangkat (§17.4 + §11.3)
+- **`Support\Sync\Handlers\SaleSyncHandler`** — kini mendukung dua operasi:
+  - `sale`/`create` — seperti sebelumnya, ditambah adopsi `entity_id` perangkat sebagai uuid penjualan dan idempotensi berbasis identitas (operasi dengan `entity_id` yang sudah ada mengembalikan record yang sama, bukan penjualan kedua);
+  - `sale`/`update` — **void** lewat `VoidSale`: payload wajib menyatakan void (`void: true` atau `payment_status: 'void'`) dan memuat `user_id` + `reason`; tenant/perangkat selalu diambil dari server (§12); `enqueue_for_sync: false` supaya operasi perangkat tidak dipantulkan kembali (§11.1).
+  - Validasi urutan (§11.3 langkah 5): void untuk penjualan yang belum ada di server **ditolak** dengan pesan jelas — penjualannya harus dikirim lebih dahulu (satu batch tetap aman karena inbox diterapkan urut `id`/`local_sequence`, sehingga create mendahului update).
+  - Pelanggaran domain (`VoidNotAllowed`: tanpa alasan, piutang sudah dibayar) → `rejected`, bukan `conflict`.
+- **`Sales\VoidSale`** — menambah `client_request_id` & `enqueue_for_sync` (aditif) dan langkah outbox: bila pembatalan berjalan di perangkat (`device_id` ada), satu operasi `sale`/`update` dengan payload `{ void: true, user_id, reason, restore_stock }` dimasukkan ke outbox perangkat **di dalam transaksi yang sama** (§11.1 transactional outbox). `client_request_id` juga direkam di metadata audit `sale.voided` agar penerapan ulang perangkat dapat dilacak.
+
+### Pengujian
+- **`tests/Feature/Sync/SaleVoidSyncTest.php`** (13) — void perangkat diterapkan ke domain (stok kembali, mutasi `sale_void`, audit dengan `device_id` + `client_request_id`, item tetap ada); kirim ulang void tidak mengembalikan stok dua kali; penerapan ulang (tanpa baris `received`) tetap idempoten; server mengadopsi uuid penjualan dari perangkat; identitas penjualan yang sama tidak pernah dibuat dua kali; `entity_id` bukan UUID ditolak; create+void dalam satu batch diterapkan berurutan; void tanpa alasan ditolak; `update` tanpa pernyataan void ditolak; void atas penjualan yang belum ada di server ditolak (urutan); void atas piutang yang sudah dibayar ditolak; void di perangkat menulis tepat satu operasi outbox `update`; penerapan void tidak memantulkan operasi kembali ke outbox.
+
+## Status suite
+- **723 passed / 0 failed / 4 skipped** (2431 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint 4 file, 1 style issue.
+- Tidak ada migrasi baru pada increment ini.
+
+---
+
 # Rebuild POS Universal — Fase 5: Pembatalan Transaksi Terkontrol / Void (§17.4, Increment 43) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026
