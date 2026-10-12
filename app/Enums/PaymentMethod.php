@@ -28,6 +28,15 @@ enum PaymentMethod: string
     /** QRIS statis milik merchant — hanya instruksi pembayaran (FR-05). */
     case QrisStatic = 'qris_static';
 
+    /**
+     * Pembayaran campuran (FR-05). BUKAN metode yang dipilih kasir secara
+     * langsung: nilai ini hanya dihasilkan `CreateSale` saat satu penjualan
+     * dibayar dengan dua metode atau lebih. Rinciannya tersimpan per tender di
+     * `transaction_payments`. Karena itu ia harus dikecualikan dari daftar
+     * pilihan metode tunggal di UI.
+     */
+    case Mixed = 'mixed';
+
     public function label(): string
     {
         return match ($this) {
@@ -36,7 +45,22 @@ enum PaymentMethod: string
             self::DebitCard => 'Kartu Debit',
             self::CreditCard => 'Kartu Kredit',
             self::QrisStatic => 'QRIS (statis)',
+            self::Mixed => 'Campuran',
         };
+    }
+
+    /**
+     * Metode yang boleh dipilih kasir sebagai SATU-satunya metode pembayaran.
+     * `Mixed` dikecualikan karena ia adalah hasil komposisi, bukan pilihan.
+     *
+     * @return list<self>
+     */
+    public static function selectable(): array
+    {
+        return array_values(array_filter(
+            self::cases(),
+            static fn (self $method): bool => $method !== self::Mixed,
+        ));
     }
 
     /**

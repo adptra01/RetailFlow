@@ -1,3 +1,44 @@
+# Rebuild POS Universal — Fase 5: Pembayaran Campuran / Split Payment (FR-05, Increment 42) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§5.1 MVP #7; FR-05 Pembayaran: "Pembayaran campuran"; FR-07 penjualan kredit; §17.1 uang integer minor).
+
+## Perubahan
+
+### Migrasi
+- **`2026_10_12_000006_create_transaction_payments_table.php`**: tabel `transaction_payments` — satu baris = satu **tender** (satu kali serah-bayar) untuk sebuah penjualan: `transaction_id` (FK cascade), `payment_method`, `amount_minor`, `payment_verification` (default `cashier_recorded`), `reference`/`notes` opsional; uuid/tenant_id/version. Sebelumnya satu penjualan hanya sanggup mewakili satu metode (`transactions.payment_method` + `paid_minor`).
+
+### Aksi Domain
+- **`Sales\CreateSale`** — menerima `payments: list<{payment_method, amount_minor, reference?, notes?}>` (amandemen **aditif**; jalur lama `payment_method` + `paid_minor` tidak berubah, termasuk penjualan kredit tanpa bayar):
+  - penyelesaian pembayaran dipusatkan di `settlePayment()` / `settleSplitPayment()` → satu tempat memutuskan metode, nominal, kembalian, dan daftar tender;
+  - **jumlah seluruh tender = `paid_minor`**; bila `paid_minor` ikut dikirim, ia wajib cocok (menolak dua sumber kebenaran);
+  - **total tender non-tunai tidak boleh melebihi total** → kembalian dijamin hanya berasal dari tunai;
+  - lebih dari satu tender mencatat `payment_method = mixed`; satu tender lewat `payments` tetap metode tunggal (QRIS tunggal tetap wajib tepat total);
+  - aturan FR-05 lama tetap: metode instruksi (transfer manual, QRIS statis) tidak pernah "terverifikasi", QRIS statis menuntut tenant yang sudah mengunggah QRIS, metode di luar katalog ditolak;
+  - **setiap** penjualan (termasuk metode tunggal) kini menulis baris `transaction_payments`, sehingga laporan per metode punya satu sumber;
+  - `syncPayload` membawa tender (metode tunggal → `payments: null`, agar replay server memakai jalur lama yang teruji).
+
+### Model, Factory & Enum
+- **`Enum\PaymentMethod`** — nilai aditif `mixed` ("Campuran") yang **hanya** dihasilkan `CreateSale`; ditolak bila dikirim sebagai `payment_method` langsung, dan dikecualikan dari pemilih metode tunggal lewat `PaymentMethod::selectable()`.
+- **`TransactionPayment`** — model tender (BelongsToTenant, HasSyncIdentity, JournalSyncChanges; `payment_method` sengaja tidak di-cast ke enum agar data impor lama tetap terbaca; `isCash()`).
+- **`TransactionPaymentFactory`**; **`Transaction`** — relasi `payments()` + `isSplitPayment()`.
+
+### UI (Folio/Volt)
+- **`/transactions/create`** (kasir) — saklar **"Split payment"**: baris tender (metode + nominal) bisa ditambah/dihapus; ringkasan "Total dibayar"/"Sisa"; peringatan QRIS belum dikonfigurasi; validasi (minimal dua tender bernominal, non-tunai ≤ total, `mixed` tidak boleh dipilih); modal konfirmasi menampilkan rincian tender. Alur metode tunggal tidak berubah.
+- **`/transactions/[Transaction]/receipt`** — pembayaran campuran dicetak sebagai rincian per tender (transaksi lama tetap satu baris "Bayar (metode)").
+- **`/transactions/[Transaction]`** — "mixed" tidak lagi bisa dipilih sebagai metode tunggal saat menyunting.
+- **`/reports`** + **`GenerateCashFlowReport`** — label "Mixed" dan pembayaran campuran ikut dihitung sebagai arus kas masuk (`paid_minor` tetap seluruh uang yang diterima).
+
+### Pengujian
+- **`tests/Feature/Payments/SplitPaymentTest.php`** (19) — dua/tiga tender → mixed; kembalian dari tunai saat tunai lebih bayar; non-tunai > total ditolak; `paid_minor` tak cocok ditolak; tender ≤ 0 ditolak; transfer tidak boleh "terverifikasi"; QRIS tanpa konfigurasi ditolak & QRIS terkonfigurasi diterima; QRIS tunggal wajib tepat total; kredit sebagian → piutang atas sisa; kredit tanpa pelanggan ditolak; replay idempoten tanpa menggandakan tender; metode tunggal tetap menulis satu baris; payload sinkronisasi perangkat membawa tender (dan `null` untuk metode tunggal); `mixed` sebagai `payment_method` langsung ditolak; metode tender asing ditolak.
+- **`tests/Feature/Payments/SplitPaymentCheckoutUiTest.php`** (11) — saklar split tampil & "Campuran" tidak muncul sebagai metode; simpan split merekam tiap tender; kembalian tunai; split dengan satu tender bernominal diblokir; non-tunai > total diblokir; tender QRIS tanpa konfigurasi diblokir / dengan konfigurasi diterima; validasi metode asing & `mixed`; tambah/hapus baris tender; alur metode tunggal tidak berubah.
+
+## Status suite
+- **696 passed / 0 failed / 4 skipped** (2271 assertions). Pint bersih (13 file, 4 style issues).
+- Migrasi `000006` dijalankan di dev.
+
+---
+
 # Rebuild POS Universal — Fase 5: Promosi & Diskon Otomatis (FR-06, Increment 41) (belum dirilis)
 
 **Tanggal:** 12 Oktober 2026

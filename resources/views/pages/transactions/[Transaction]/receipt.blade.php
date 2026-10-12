@@ -1,7 +1,7 @@
 <?php
 
-use App\Models\Transaction;
 use App\Models\Setting;
+use App\Models\Transaction;
 
 use function Livewire\Volt\mount;
 use function Livewire\Volt\state;
@@ -211,10 +211,21 @@ mount(function (Transaction $transaction) {
                 <td class="bold">{{ __('Total') }}</td>
                 <td class="text-right bold">{{ Number::currency($transaction->total_amount, 'IDR', 'id') }}</td>
             </tr>
-            <tr>
-                <td>Bayar ({{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }})</td>
-                <td class="text-right">{{ Number::currency($transaction->paid_amount, 'IDR', 'id') }}</td>
-            </tr>
+            @php($tenders = $transaction->payments)
+            @if ($tenders->count() > 1)
+                {{-- FR-05: pembayaran campuran — tampilkan rincian tiap tender. --}}
+                @foreach ($tenders as $tender)
+                    <tr>
+                        <td>Bayar ({{ \App\Enums\PaymentMethod::labelFor($tender->payment_method) }})</td>
+                        <td class="text-right">{{ Number::currency($tender->amount_minor, 'IDR', 'id') }}</td>
+                    </tr>
+                @endforeach
+            @else
+                <tr>
+                    <td>Bayar ({{ \App\Enums\PaymentMethod::labelFor($transaction->payment_method) }})</td>
+                    <td class="text-right">{{ Number::currency($transaction->paid_amount, 'IDR', 'id') }}</td>
+                </tr>
+            @endif
             <tr>
                 <td class="bold">Kembali</td>
                 <td class="text-right bold">{{ Number::currency($transaction->change_amount, 'IDR', 'id') }}</td>

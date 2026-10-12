@@ -47,13 +47,13 @@ $categoryOptions = computed(function () {
 $products = computed(function () {
     $query = Product::query()->where('is_active', true);
 
-    if (!empty($this->category_id)) {
+    if (! empty($this->category_id)) {
         $query->where('category_id', $this->category_id);
     }
 
-    if (!empty($this->productSearch)) {
+    if (! empty($this->productSearch)) {
         $query->where(function ($q) {
-            $q->where('name', 'like', '%' . $this->productSearch . '%')->orWhere('sku', 'like', '%' . $this->productSearch . '%');
+            $q->where('name', 'like', '%'.$this->productSearch.'%')->orWhere('sku', 'like', '%'.$this->productSearch.'%');
         });
     }
 
@@ -79,6 +79,7 @@ $addToCart = function ($productId) {
         if ($item['product_id'] === $productId) {
             $item['quantity']++;
             $item['subtotal'] = $item['quantity'] * $item['unit_price'];
+
             return;
         }
     }
@@ -117,6 +118,7 @@ $removeFromCart = function ($index) {
 $confirmSave = function () {
     if (empty($this->cart)) {
         Flux::toast(variant: 'error', text: __('Please add at least one product.'));
+
         return;
     }
 
@@ -128,6 +130,7 @@ $confirmSave = function () {
 
     if (($this->paid_amount ?? 0) < $this->totalAmount) {
         Flux::toast(variant: 'error', text: __('Paid amount is less than total.'));
+
         return;
     }
 
@@ -176,7 +179,7 @@ $methodLabels = computed(function () {
 });
 
 $paymentMethods = computed(function () {
-    return array_map(fn (PaymentMethod $method) => $method->value, PaymentMethod::cases());
+    return array_map(fn (PaymentMethod $method) => $method->value, PaymentMethod::selectable());
 });
 
 ?>

@@ -69,4 +69,24 @@ class Transaction extends Model
     {
         return $this->hasMany(TransactionItem::class);
     }
+
+    /**
+     * Tender pembayaran (FR-05). Satu baris = satu kali serah-bayar; penjualan
+     * metode tunggal pun punya satu baris agar laporan per metode punya satu
+     * sumber. Lihat `TransactionPayment`.
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(TransactionPayment::class);
+    }
+
+    /**
+     * True bila penjualan dibayar dengan lebih dari satu tender. Kolom
+     * `payment_method` juga bernilai "mixed" pada kasus ini; helper ini dipakai
+     * tampilan agar tidak bergantung pada nilai string mentah.
+     */
+    public function isSplitPayment(): bool
+    {
+        return $this->payments()->count() > 1;
+    }
 }

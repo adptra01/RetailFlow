@@ -56,7 +56,9 @@ class GenerateCashFlowReport
             ->when($fromDate, fn ($q) => $q->whereDate('created_at', '>=', $fromDate))
             ->when($toDate, fn ($q) => $q->whereDate('created_at', '<=', $toDate))
             ->where('payment_status', 'paid')
-            ->whereIn('payment_method', ['cash', 'transfer', 'debit_card', 'credit_card', 'qris_static'])
+            // 'mixed' = pembayaran campuran (FR-05); nominal `paid_minor` tetap
+            // seluruh uang yang diterima, jadi ia tetap arus kas masuk.
+            ->whereIn('payment_method', ['cash', 'transfer', 'debit_card', 'credit_card', 'qris_static', 'mixed'])
             ->get()
             ->map(function ($tx) {
                 return [

@@ -3,8 +3,8 @@
 use App\Models\Category;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
-use Illuminate\Support\Number;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Number;
 
 use function Laravel\Folio\middleware;
 use function Laravel\Folio\name;
@@ -28,12 +28,12 @@ updated(['from_date', 'to_date'], function () {
 });
 
 $summary = computed(function () {
-    $query = Transaction::whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59']);
+    $query = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
 
     $totalRevenue = (float) $query->sum('total_amount');
     $totalTransactions = $query->count();
     $totalItems = TransactionItem::whereHas('transaction', function ($q) {
-        $q->whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59']);
+        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
     })->sum('quantity');
 
     return [
@@ -45,15 +45,15 @@ $summary = computed(function () {
 });
 
 $dailyRevenueData = computed(function () {
-    $sales = Transaction::whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59'])
+    $sales = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
         ->selectRaw('DATE(created_at) as date, SUM(total_amount) as revenue')
         ->groupBy('date')
         ->orderBy('date')
         ->get();
 
     return [
-        'labels' => $sales->map(fn($s) => Carbon::parse($s->date)->format('d M'))->toArray(),
-        'series' => $sales->map(fn($s) => (float) $s->revenue)->toArray(),
+        'labels' => $sales->map(fn ($s) => Carbon::parse($s->date)->format('d M'))->toArray(),
+        'series' => $sales->map(fn ($s) => (float) $s->revenue)->toArray(),
     ];
 });
 
@@ -64,23 +64,24 @@ $paymentMethodData = computed(function () {
         'debit_card' => __('Debit Card'),
         'credit_card' => __('Credit Card'),
         'qris_static' => __('QRIS (statis)'),
+        'mixed' => __('Mixed'),
     ];
 
-    $rows = Transaction::whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59'])
+    $rows = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
         ->selectRaw('payment_method, SUM(total_amount) as total')
         ->groupBy('payment_method')
         ->get();
 
     return [
-        'labels' => $rows->map(fn($r) => $labels_map[$r->payment_method] ?? $r->payment_method)->toArray(),
-        'series' => $rows->map(fn($r) => (float) $r->total)->toArray(),
+        'labels' => $rows->map(fn ($r) => $labels_map[$r->payment_method] ?? $r->payment_method)->toArray(),
+        'series' => $rows->map(fn ($r) => (float) $r->total)->toArray(),
     ];
 });
 
 $topProductsData = computed(function () {
     $rows = TransactionItem::selectRaw('product_id, SUM(subtotal) as revenue')
         ->whereHas('transaction', function ($q) {
-            $q->whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59']);
+            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
         })
         ->with('product:id,name')
         ->groupBy('product_id')
@@ -89,14 +90,14 @@ $topProductsData = computed(function () {
         ->get();
 
     return [
-        'labels' => $rows->map(fn($r) => $r->product?->name ?? __('Unknown'))->toArray(),
-        'series' => $rows->map(fn($r) => (float) $r->revenue)->toArray(),
+        'labels' => $rows->map(fn ($r) => $r->product?->name ?? __('Unknown'))->toArray(),
+        'series' => $rows->map(fn ($r) => (float) $r->revenue)->toArray(),
     ];
 });
 
 $totalProfit = computed(function () {
     $items = TransactionItem::whereHas('transaction', function ($q) {
-        $q->whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59']);
+        $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
     })->with('product')->get();
 
     $revenue = $items->sum('subtotal');
@@ -115,7 +116,9 @@ $lowStockProducts = computed(function () {
     return \App\Models\Product::with('units')
         ->where('is_unlimited_stock', false)
         ->where('stock', '>', 0)
-        ->where(function ($q) { $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5); })
+        ->where(function ($q) {
+            $q->where('stock', '<', \DB::raw('min_stock'))->orWhere('stock', '<', 5);
+        })
         ->orderBy('stock')
         ->limit(10)
         ->get();
@@ -132,7 +135,7 @@ $categoryData = computed(function () {
     $rows = TransactionItem::selectRaw('products.category_id, SUM(transaction_items.subtotal) as revenue')
         ->join('products', 'transaction_items.product_id', '=', 'products.id')
         ->whereHas('transaction', function ($q) {
-            $q->whereBetween('created_at', [$this->from_date . ' 00:00:00', $this->to_date . ' 23:59:59']);
+            $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59']);
         })
         ->groupBy('products.category_id')
         ->orderByDesc('revenue')
@@ -141,8 +144,8 @@ $categoryData = computed(function () {
     $categories = Category::pluck('name', 'id');
 
     return [
-        'labels' => $rows->map(fn($r) => $categories[$r->category_id] ?? __('Unknown'))->toArray(),
-        'series' => $rows->map(fn($r) => (float) $r->revenue)->toArray(),
+        'labels' => $rows->map(fn ($r) => $categories[$r->category_id] ?? __('Unknown'))->toArray(),
+        'series' => $rows->map(fn ($r) => (float) $r->revenue)->toArray(),
     ];
 });
 

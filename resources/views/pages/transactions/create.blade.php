@@ -41,6 +41,11 @@ state([
     'productSearch' => '',
     'cart' => [],
     'paid_amount' => 0,
+    'split_payment' => false,
+    // FR-05 pembayaran campuran: daftar tender (metode + nominal major).
+    'payments' => [
+        ['payment_method' => PaymentMethod::Cash->value, 'amount' => 0],
+    ],
     'discount_type' => 'none', // none | percent | nominal (FR-06)
     'discount_value' => 0,
     'notes' => '',
@@ -69,7 +74,7 @@ $filteredCustomers = computed(function () {
         return collect();
     }
 
-    return Customer::where('name', 'like', '%' . $this->customer_search . '%')
+    return Customer::where('name', 'like', '%'.$this->customer_search.'%')
         ->orderBy('name')->limit(10)->get();
 });
 
@@ -82,9 +87,9 @@ $products = computed(function () {
 
     if (! empty($this->productSearch)) {
         $query->where(function ($q) {
-            $q->where('name', 'like', '%' . $this->productSearch . '%')
-              ->orWhere('sku', 'like', '%' . $this->productSearch . '%')
-              ->orWhere('barcode', 'like', '%' . $this->productSearch . '%');
+            $q->where('name', 'like', '%'.$this->productSearch.'%')
+                ->orWhere('sku', 'like', '%'.$this->productSearch.'%')
+                ->orWhere('barcode', 'like', '%'.$this->productSearch.'%');
         });
     }
 
@@ -162,10 +167,32 @@ $isCredit = computed(fn () => $this->changeMinor < 0);
  * konstruksi — kasir tidak mengetik nominal dan tidak ada kembalian. Semua
  * perhitungan (kembalian, kredit, nominal yang dikirim ke domain) memakai
  * `effectivePaidMinor` agar tampilan dan data tersimpan tidak pernah berbeda.
+ * Saat pembayaran campuran aktif, jalur QRIS tunggal ini tidak berlaku.
  */
-$isQrisStatic = computed(fn () => $this->payment_method === PaymentMethod::QrisStatic->value);
+$isQrisStatic = computed(fn () => ! $this->split_payment && $this->payment_method === PaymentMethod::QrisStatic->value);
+
+/*
+ * Pembayaran campuran (FR-05): jumlah tender yang diisi kasir. `amount`
+ * disimpan dalam satuan major (seperti `paid_amount`) dan dikonversi ke minor
+ * lewat Money agar pembulatan tetap satu tempat.
+ */
+$splitPaidMinor = computed(fn () => (int) collect($this->payments ?? [])
+    ->sum(fn ($row) => Money::fromMajor((float) ($row['amount'] ?? 0))->minor()));
+
+$splitNonCashMinor = computed(fn () => (int) collect($this->payments ?? [])
+    ->reject(fn ($row) => ($row['payment_method'] ?? null) === PaymentMethod::Cash->value)
+    ->sum(fn ($row) => Money::fromMajor((float) ($row['amount'] ?? 0))->minor()));
+
+$splitRemainingMinor = computed(fn () => $this->totalMinor - $this->splitPaidMinor);
+
+$hasQrisTender = computed(fn () => collect($this->payments ?? [])
+    ->contains(fn ($row) => ($row['payment_method'] ?? null) === PaymentMethod::QrisStatic->value));
 
 $effectivePaidMinor = computed(function () {
+    if ($this->split_payment) {
+        return $this->splitPaidMinor;
+    }
+
     if ($this->isQrisStatic) {
         return $this->totalMinor;
     }
@@ -252,11 +279,12 @@ $addToCart = function () {
     $product = $this->selectedProduct;
     if (! $product || ! $this->selectedUnitId) {
         Flux::toast(variant: 'error', text: __('Please select a unit.'));
+
         return;
     }
     $unit = ProductUnit::findOrFail($this->selectedUnitId);
 
-    $cartKey = $product->id . '-' . $unit->id;
+    $cartKey = $product->id.'-'.$unit->id;
 
     foreach ($this->cart as &$item) {
         if ($item['cart_key'] === $cartKey) {
@@ -265,6 +293,7 @@ $addToCart = function () {
             $this->showUnitModal = false;
             $this->selectedProduct = null;
             $this->paid_amount = $this->totalMinor;
+
             return;
         }
     }
@@ -276,7 +305,7 @@ $addToCart = function () {
         'unit_name' => $unit->name,
         'unit_abbreviation' => $unit->abbreviation,
         'conversion_factor' => (float) $unit->conversion_factor,
-        'name' => $product->name . ' (' . $unit->abbreviation . ')',
+        'name' => $product->name.' ('.$unit->abbreviation.')',
         'unit_price' => (float) $unit->price,
         'quantity' => 1,
         'subtotal' => (float) $unit->price,
@@ -324,19 +353,71 @@ $clearCustomer = function () {
     $this->customer_search = '';
 };
 
+/*
+ * FR-05 pembayaran campuran: baris tender bisa ditambah/dihapus kasir.
+ * Metode baru selalu dimulai dari tunai agar kasir sadar memilih.
+ */
+$addPayment = function () {
+    $payments = $this->payments ?? [];
+    $payments[] = ['payment_method' => PaymentMethod::Cash->value, 'amount' => 0];
+    $this->payments = array_values($payments);
+};
+
+$removePayment = function (int $index) {
+    $payments = $this->payments ?? [];
+    unset($payments[$index]);
+    $this->payments = array_values($payments);
+};
+
 $confirmSave = function () {
     if (empty($this->cart)) {
         Flux::toast(variant: 'error', text: __('Please add at least one product.'));
+
         return;
     }
 
-    $this->validate([
-        'paid_amount' => 'required|numeric|min:0',
+    $rules = [
         'payment_method' => ['required', 'string', Rule::enum(PaymentMethod::class)],
         'discount_type' => 'required|string|in:none,percent,nominal',
         'discount_value' => 'nullable|numeric|min:0',
         'notes' => 'nullable|string|max:500',
-    ]);
+    ];
+
+    if ($this->split_payment) {
+        $rules['payments'] = 'required|array|min:1';
+        // `mixed` bukan pilihan tender; ia hanya hasil komposisi.
+        $rules['payments.*.payment_method'] = ['required', 'string', Rule::enum(PaymentMethod::class), 'not_in:'.PaymentMethod::Mixed->value];
+        $rules['payments.*.amount'] = 'required|numeric|min:0';
+    } else {
+        $rules['paid_amount'] = 'required|numeric|min:0';
+    }
+
+    $this->validate($rules);
+
+    if ($this->split_payment) {
+        $tenderCount = collect($this->payments ?? [])
+            ->filter(fn ($row) => Money::fromMajor((float) ($row['amount'] ?? 0))->minor() > 0)
+            ->count();
+
+        if ($tenderCount < 2) {
+            Flux::toast(variant: 'error', text: __('Pembayaran campuran membutuhkan minimal dua metode bernominal.'));
+
+            return;
+        }
+
+        if ($this->hasQrisTender && ! $this->qrisConfigured) {
+            Flux::toast(variant: 'error', text: __('QRIS is not configured for this store.'));
+
+            return;
+        }
+
+        // Kembalian hanya boleh berasal dari tunai (FR-05).
+        if ($this->splitNonCashMinor > $this->totalMinor) {
+            Flux::toast(variant: 'error', text: __('Pembayaran non-tunai tidak boleh melebihi total.'));
+
+            return;
+        }
+    }
 
     // FR-05: tidak ada pembayaran QRIS tanpa QRIS yang diunggah pemilik.
     if ($this->isQrisStatic && ! $this->qrisConfigured) {
@@ -354,6 +435,7 @@ $confirmSave = function () {
     // Credit sales need a customer (FR-07).
     if ($this->isCredit && ! $this->customer_id) {
         Flux::toast(variant: 'error', text: __('Select customer for credit sale.'));
+
         return;
     }
 
@@ -395,6 +477,21 @@ $save = function () {
         $transactionPromo = $this->promotionPreview['transaction_discount'] ?? null;
         $promoTotal = $usePromo ? $this->promoDiscountMinor : 0;
 
+        // FR-05 pembayaran campuran: kirim daftar tender hanya bila mode split
+        // aktif. Baris bernominal nol dibuang agar tidak membuat tender palsu.
+        $payments = null;
+
+        if ($this->split_payment) {
+            $payments = collect($this->payments ?? [])
+                ->map(fn ($row) => [
+                    'payment_method' => (string) ($row['payment_method'] ?? ''),
+                    'amount_minor' => Money::fromMajor((float) ($row['amount'] ?? 0))->minor(),
+                ])
+                ->filter(fn (array $row) => $row['amount_minor'] > 0)
+                ->values()
+                ->all();
+        }
+
         $transaction = app(CreateSale::class)->handle([
             'user_id' => auth()->id(),
             // Sesi web tidak mengikat TenantContext (lihat AuthenticateDevice untuk
@@ -406,6 +503,7 @@ $save = function () {
             'payment_method' => $this->payment_method,
             'payment_verification' => PaymentVerification::CashierRecorded->value,
             'paid_minor' => $this->effectivePaidMinor,
+            'payments' => $payments,
             'discount_percent' => $this->discount_type === 'percent' ? (float) $this->discount_value : null,
             'discount_minor' => $this->discount_type === 'nominal' ? (int) $this->discount_value : ($promoTotal > 0 ? $promoTotal : null),
             'promotion_id' => $transactionPromo['promotion_id'] ?? null,
@@ -417,7 +515,15 @@ $save = function () {
         ]);
 
         // Success: the sale is committed before the cart empties (FR-04).
-        $this->reset(['customer_name', 'customer_id', 'customer_search', 'category_id', 'productSearch', 'cart', 'paid_amount', 'payment_method', 'discount_type', 'discount_value', 'notes', 'client_request_id', 'showConfirmModal']);
+        $this->reset(['customer_name', 'customer_id', 'customer_search', 'category_id', 'productSearch', 'cart', 'paid_amount', 'split_payment', 'discount_type', 'discount_value', 'notes', 'client_request_id', 'showConfirmModal']);
+
+        // `reset()` tidak mengembalikan array state ke bentuk awal secara andal,
+        // jadi tender diisi ulang eksplisit (satu baris tunai default).
+        $this->payments = [
+            ['payment_method' => PaymentMethod::Cash->value, 'amount' => 0],
+        ];
+
+        $this->payment_method = PaymentMethod::Cash->value;
 
         $this->savedTransactionId = $transaction->id;
         $this->savedInvoiceNumber = $transaction->invoice_number;
@@ -459,8 +565,10 @@ $save = function () {
             }">
             @php
                 // Katalog FR-05 (sumber tunggal: enum PaymentMethod), termasuk
-                // QRIS statis. Label aman untuk nilai lama lewat labelFor().
-                $paymentMethods = \App\Enums\PaymentMethod::cases();
+                // QRIS statis, TANPA "mixed" (mixed hanya hasil komposisi
+                // tender, bukan pilihan metode tunggal). Label aman untuk nilai
+                // lama lewat labelFor().
+                $paymentMethods = \App\Enums\PaymentMethod::selectable();
             @endphp
 
             <flux:breadcrumbs>
@@ -637,47 +745,96 @@ $save = function () {
 
                             {{-- Payment --}}
                             <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800">
-                                <flux:heading size="lg">{{ __('Payment') }}</flux:heading>
+                                <div class="flex items-start justify-between gap-3">
+                                    <flux:heading size="lg">{{ __('Payment') }}</flux:heading>
+                                    <flux:switch wire:model.live="split_payment" :label="__('Split payment')" />
+                                </div>
                                 <div class="mt-4 space-y-3">
-                                    <flux:select wire:model.live="payment_method" :label="__('Method')">
-                                        @foreach ($paymentMethods as $method)
-                                            <flux:select.option value="{{ $method->value }}">{{ $method->label() }}</flux:select.option>
-                                        @endforeach
-                                    </flux:select>
+                                    @if ($this->split_payment)
+                                        {{-- FR-05: pembayaran campuran — beberapa tender untuk satu penjualan. --}}
+                                        <p class="text-xs text-zinc-500">
+                                            {{ __('Bagilah pembayaran menjadi beberapa metode (minimal dua).') }}
+                                        </p>
 
-                                    @if ($this->isQrisStatic)
-                                        {{-- FR-05: QRIS statis = instruksi pembayaran; nominal terkunci --}}
-                                        <div class="rounded-lg border border-teal-200 bg-teal-50 p-3 dark:border-teal-700 dark:bg-teal-900/20">
-                                            @if ($this->qrisConfigured)
-                                                <p class="text-sm font-medium text-teal-800 dark:text-teal-200">{{ __('Scan this QRIS to pay') }}</p>
-                                                <div class="mt-2 flex items-start gap-4">
-                                                    <div class="shrink-0 rounded bg-white p-2">{!! $this->qrisSvg !!}</div>
-                                                    <div class="space-y-1 text-sm">
-                                                        <p class="font-medium">{{ $this->qrisTenant?->qrisMerchantDisplayName() }}</p>
-                                                        <p>{{ __('Amount') }}: <span class="font-medium">{{ Number::currency($this->totalMinor, 'IDR', 'id') }}</span></p>
-                                                        <p class="text-xs text-zinc-600 dark:text-zinc-300">
-                                                            {{ __('The cashier records this payment; the system does not automatically verify it.') }}
-                                                        </p>
-                                                    </div>
+                                        @foreach ($this->payments ?? [] as $index => $row)
+                                            <div class="flex items-end gap-2" wire:key="tender-{{ $index }}">
+                                                <div class="flex-1">
+                                                    <flux:select wire:model="payments.{{ $index }}.payment_method" :label="__('Method')">
+                                                        @foreach ($paymentMethods as $method)
+                                                            <flux:select.option value="{{ $method->value }}">{{ $method->label() }}</flux:select.option>
+                                                        @endforeach
+                                                    </flux:select>
                                                 </div>
-                                            @else
-                                                <p class="text-sm font-medium text-red-700 dark:text-red-300">
-                                                    {{ __('QRIS is not configured for this store. Ask the owner to upload it in Payment Settings.') }}
-                                                </p>
-                                            @endif
-                                        </div>
-                                    @endif
+                                                <div class="flex-1">
+                                                    <flux:input wire:model.live="payments.{{ $index }}.amount" :label="__('Amount')" type="number"
+                                                        step="0.01" min="0" />
+                                                </div>
+                                                <flux:button type="button" variant="subtle" icon="x-mark"
+                                                    wire:click="removePayment({{ $index }})" />
+                                            </div>
+                                        @endforeach
 
-                                    @if ($this->isQrisStatic && $this->qrisConfigured)
-                                        <div>
-                                            <flux:label>{{ __('Paid Amount') }}</flux:label>
-                                            <p class="mt-1 font-medium">
-                                                {{ Number::currency($this->effectivePaidMinor, 'IDR', 'id') }}
-                                                <span class="text-xs text-zinc-500">({{ __('locked to the total') }})</span>
+                                        <flux:button type="button" variant="subtle" size="sm" icon="plus" wire:click="addPayment">
+                                            {{ __('Add method') }}
+                                        </flux:button>
+
+                                        @if ($this->hasQrisTender && ! $this->qrisConfigured)
+                                            <p class="text-sm font-medium text-red-700 dark:text-red-300">
+                                                {{ __('QRIS is not configured for this store. Ask the owner to upload it in Payment Settings.') }}
                                             </p>
+                                        @endif
+
+                                        <div class="grid grid-cols-2 gap-3 text-sm">
+                                            <div>
+                                                <span class="text-zinc-500">{{ __('Total paid') }}</span>
+                                                <p class="font-medium">{{ Number::currency($this->splitPaidMinor, 'IDR', 'id') }}</p>
+                                            </div>
+                                            <div>
+                                                <span class="text-zinc-500">{{ __('Remaining') }}</span>
+                                                <p class="font-medium">{{ Number::currency($this->splitRemainingMinor, 'IDR', 'id') }}</p>
+                                            </div>
                                         </div>
-                                    @elseif (! $this->isQrisStatic)
-                                        <flux:input wire:model.live="paid_amount" :label="__('Paid Amount')" type="number" step="0.01" min="0" />
+                                    @else
+                                        <flux:select wire:model.live="payment_method" :label="__('Method')">
+                                            @foreach ($paymentMethods as $method)
+                                                <flux:select.option value="{{ $method->value }}">{{ $method->label() }}</flux:select.option>
+                                            @endforeach
+                                        </flux:select>
+
+                                        @if ($this->isQrisStatic)
+                                            {{-- FR-05: QRIS statis = instruksi pembayaran; nominal terkunci --}}
+                                            <div class="rounded-lg border border-teal-200 bg-teal-50 p-3 dark:border-teal-700 dark:bg-teal-900/20">
+                                                @if ($this->qrisConfigured)
+                                                    <p class="text-sm font-medium text-teal-800 dark:text-teal-200">{{ __('Scan this QRIS to pay') }}</p>
+                                                    <div class="mt-2 flex items-start gap-4">
+                                                        <div class="shrink-0 rounded bg-white p-2">{!! $this->qrisSvg !!}</div>
+                                                        <div class="space-y-1 text-sm">
+                                                            <p class="font-medium">{{ $this->qrisTenant?->qrisMerchantDisplayName() }}</p>
+                                                            <p>{{ __('Amount') }}: <span class="font-medium">{{ Number::currency($this->totalMinor, 'IDR', 'id') }}</span></p>
+                                                            <p class="text-xs text-zinc-600 dark:text-zinc-300">
+                                                                {{ __('The cashier records this payment; the system does not automatically verify it.') }}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                @else
+                                                    <p class="text-sm font-medium text-red-700 dark:text-red-300">
+                                                        {{ __('QRIS is not configured for this store. Ask the owner to upload it in Payment Settings.') }}
+                                                    </p>
+                                                @endif
+                                            </div>
+                                        @endif
+
+                                        @if ($this->isQrisStatic && $this->qrisConfigured)
+                                            <div>
+                                                <flux:label>{{ __('Paid Amount') }}</flux:label>
+                                                <p class="mt-1 font-medium">
+                                                    {{ Number::currency($this->effectivePaidMinor, 'IDR', 'id') }}
+                                                    <span class="text-xs text-zinc-500">({{ __('locked to the total') }})</span>
+                                                </p>
+                                            </div>
+                                        @elseif (! $this->isQrisStatic)
+                                            <flux:input wire:model.live="paid_amount" :label="__('Paid Amount')" type="number" step="0.01" min="0" />
+                                        @endif
                                     @endif
 
                                     <div class="grid grid-cols-2 gap-3">
@@ -827,11 +984,25 @@ $save = function () {
                     <div class="grid grid-cols-3 gap-4 text-sm">
                         <div>
                             <span class="text-zinc-500">{{ __('Payment') }}</span>
-                            <p class="font-medium">{{ \App\Enums\PaymentMethod::labelFor($payment_method) }}</p>
+                            @if ($this->split_payment)
+                                <p class="font-medium">{{ \App\Enums\PaymentMethod::labelFor(\App\Enums\PaymentMethod::Mixed->value) }}</p>
+                                <ul class="mt-1 space-y-0.5 text-xs text-zinc-500">
+                                    @foreach ($this->payments ?? [] as $row)
+                                        @if ((float) ($row['amount'] ?? 0) > 0)
+                                            <li>
+                                                {{ \App\Enums\PaymentMethod::labelFor($row['payment_method'] ?? null) }}:
+                                                {{ Number::currency((float) $row['amount'], 'IDR', 'id') }}
+                                            </li>
+                                        @endif
+                                    @endforeach
+                                </ul>
+                            @else
+                                <p class="font-medium">{{ \App\Enums\PaymentMethod::labelFor($payment_method) }}</p>
+                            @endif
                         </div>
                         <div>
                             <span class="text-zinc-500">{{ __('Paid') }}</span>
-                            <p class="font-medium">{{ Number::currency((float) ($paid_amount ?: 0), 'IDR', 'id') }}</p>
+                            <p class="font-medium">{{ Number::currency($this->effectivePaidMinor, 'IDR', 'id') }}</p>
                         </div>
                         <div>
                             <span class="text-zinc-500">{{ __('Change') }}</span>

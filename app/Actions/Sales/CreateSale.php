@@ -18,6 +18,7 @@ use App\Models\StockMovement;
 use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
+use App\Models\TransactionPayment;
 use App\Support\Money\Money;
 use App\Support\Sync\Outbox;
 use App\Support\Tenancy\TenantContext;
@@ -57,6 +58,12 @@ use Illuminate\Support\Str;
  *    "terverifikasi" — status itu hanya datang dari gateway resmi. QRIS statis
  *    menuntut nominal tepat (bayar == total, tanpa kembalian) dan menolak
  *    transaksi bila tenant belum mengunggah QRIS.
+ *  - mixed payment (FR-05 "Pembayaran campuran"): bila `payments` memuat lebih
+ *    dari satu tender, penjualan dicatat dengan `payment_method = mixed` dan
+ *    tiap tender disimpan di `transaction_payments`. Jumlah tender harus sama
+ *    dengan `paid_minor`, total tender non-tunai tidak boleh melebihi total
+ *    (kembalian hanya boleh berasal dari tunai), dan tender QRIS statis tetap
+ *    menuntut tenant yang sudah mengunggah QRIS.
  *
  * Money math (IDR minor exponent 0, see config/pos.php):
  *  - item subtotal      = unit_price_minor * quantity
@@ -65,6 +72,7 @@ use Illuminate\Support\Str;
  *  - paid > total       = cash only, change returned; non-cash overpay rejected
  *  - paid == total      = paid in full
  *  - paid < total       = credit sale (customer required), balance += unpaid
+ *  - split              = paid_minor = sum(tenders); non-cash tenders <= total
  */
 class CreateSale
 {
@@ -84,6 +92,12 @@ class CreateSale
      *     payment_method?: string,
      *     paid_minor?: int,
      *     payment_verification?: string|null,
+     *     payments?: list<array{
+     *         payment_method: string,
+     *         amount_minor: int,
+     *         reference?: string|null,
+     *         notes?: string|null,
+     *     }>,
      *     discount_minor?: int|null,
      *     discount_percent?: int|float|null,
      *     promotion_id?: int|null,
@@ -135,14 +149,17 @@ class CreateSale
         $subtotal = $this->computeSubtotal($items);
         $discount = $this->resolveTransactionDiscount($data, $subtotal);
         $total = $subtotal->subtract($discount);
-        $paid = new Money((int) ($data['paid_minor'] ?? 0));
-        $paymentMethod = $this->resolvePaymentMethod($data['payment_method'] ?? null);
-        $verification = $this->resolvePaymentVerification($data['payment_verification'] ?? null);
-        $change = $this->resolveChange($paymentMethod, $paid, $total);
 
         $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
 
-        $this->assertPaymentRules($paymentMethod, $verification, $paid, $total, $tenantId);
+        // FR-05: satu tempat yang memutuskan metode, nominal, kembalian, dan
+        // daftar tender (tunggal maupun campuran).
+        $settlement = $this->settlePayment($data, $total, $tenantId);
+
+        $paymentMethod = $settlement['method'];
+        $verification = $settlement['verification'];
+        $paid = $settlement['paid'];
+        $change = $settlement['change'];
 
         // §11.4: kebijakan stok negatif dapat diaktifkan owner. Bila aktif,
         // penjualan tetap diterapkan meski membuat stok negatif; konfliknya
@@ -235,6 +252,21 @@ class CreateSale
             $this->decrementStock($product, $item, $transaction, $data['user_id'], $tenantId);
         }
 
+        // FR-05: tiap serah-bayar dicatat sebagai satu tender. Metode tunggal
+        // pun menulis satu baris agar `transaction_payments` menjadi sumber
+        // tunggal laporan per metode (termasuk penjualan campuran).
+        foreach ($settlement['tenders'] as $tender) {
+            TransactionPayment::create([
+                'transaction_id' => $transaction->id,
+                'payment_method' => $tender['payment_method']->value,
+                'amount_minor' => $tender['amount_minor'],
+                'payment_verification' => $tender['payment_verification']->value,
+                'reference' => $tender['reference'],
+                'notes' => $tender['notes'],
+                'tenant_id' => $tenantId,
+            ]);
+        }
+
         if ($isCredit && $customer) {
             $unpaid = $total->subtract($paid);
 
@@ -267,10 +299,11 @@ class CreateSale
                 'payment_status' => $transaction->payment_status,
                 'payment_method' => $paymentMethod->value,
                 'payment_verification' => $verification->value,
+                'payment_count' => count($settlement['tenders']),
             ],
         ]);
 
-        $this->enqueueForSync($data, $transaction, $items, $tenantId, $clientRequestId);
+        $this->enqueueForSync($data, $transaction, $items, $settlement, $tenantId, $clientRequestId);
 
         return $transaction->load('items');
     }
@@ -287,11 +320,13 @@ class CreateSale
      *
      * @param  array<string, mixed>  $data
      * @param  list<array<string, mixed>>  $items
+     * @param  array{method: PaymentMethod, verification: PaymentVerification, paid: Money, change: Money, tenders: list<array{payment_method: PaymentMethod, payment_verification: PaymentVerification, amount_minor: int, reference: string|null, notes: string|null}>}  $settlement
      */
     private function enqueueForSync(
         array $data,
         Transaction $transaction,
         array $items,
+        array $settlement,
         ?string $tenantId,
         ?string $clientRequestId,
     ): void {
@@ -310,7 +345,7 @@ class CreateSale
             'sale',
             $transaction->uuid,
             SyncOperationType::Create,
-            $this->syncPayload($data, $items),
+            $this->syncPayload($data, $items, $settlement),
             $clientRequestId,
         );
     }
@@ -319,19 +354,37 @@ class CreateSale
      * Payload operasi sinkronisasi penjualan: cukup untuk membangun ulang
      * penjualan di server lewat `CreateSale` (dipakai `SaleSyncHandler`).
      *
+     * Nilai pembayaran diambil dari hasil penyelesaian (bukan dari `$data`
+     * mentah) supaya pembayaran campuran ikut utuh: `payment_method` menjadi
+     * "mixed" dan `payments` memuat seluruh tender. Untuk metode tunggal
+     * `payments` dikirim `null` agar sisi server memakai jalur lama yang sudah
+     * teruji (termasuk penjualan kredit tanpa bayar).
+     *
      * @param  array<string, mixed>  $data
      * @param  list<array<string, mixed>>  $items
+     * @param  array{method: PaymentMethod, verification: PaymentVerification, paid: Money, change: Money, tenders: list<array{payment_method: PaymentMethod, payment_verification: PaymentVerification, amount_minor: int, reference: string|null, notes: string|null}>}  $settlement
      * @return array<string, mixed>
      */
-    private function syncPayload(array $data, array $items): array
+    private function syncPayload(array $data, array $items, array $settlement): array
     {
+        $tenders = $settlement['tenders'];
+
         return [
             'user_id' => $data['user_id'],
             'customer_id' => $data['customer_id'] ?? null,
             'customer_name' => $data['customer_name'] ?? null,
-            'payment_method' => $data['payment_method'] ?? PaymentMethod::Cash->value,
-            'payment_verification' => $data['payment_verification'] ?? PaymentVerification::CashierRecorded->value,
-            'paid_minor' => (int) ($data['paid_minor'] ?? 0),
+            'payment_method' => $settlement['method']->value,
+            'payment_verification' => $settlement['verification']->value,
+            'paid_minor' => $settlement['paid']->minor(),
+            'payments' => count($tenders) > 1
+                ? array_map(static fn (array $tender): array => [
+                    'payment_method' => $tender['payment_method']->value,
+                    'amount_minor' => $tender['amount_minor'],
+                    'payment_verification' => $tender['payment_verification']->value,
+                    'reference' => $tender['reference'],
+                    'notes' => $tender['notes'],
+                ], $tenders)
+                : null,
             'discount_minor' => $data['discount_minor'] ?? null,
             'discount_percent' => $data['discount_percent'] ?? null,
             'promotion_id' => $data['promotion_id'] ?? null,
@@ -442,6 +495,164 @@ class CreateSale
     }
 
     /**
+     * FR-05: menyelesaikan pembayaran menjadi metode utama, status verifikasi,
+     * nominal dibayar, kembalian, dan daftar tender.
+     *
+     * Ada dua jalur yang sengaja dipertahankan:
+     *  - jalur `payments` (campuran atau satu tender eksplisit);
+     *  - jalur lama `payment_method` + `paid_minor` (tanpa `payments`) —
+     *    perilakunya tidak berubah sedikit pun, termasuk penjualan kredit tanpa
+     *    bayar, agar pemanggil lama dan sinkronisasi tetap kompatibel.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array{method: PaymentMethod, verification: PaymentVerification, paid: Money, change: Money, tenders: list<array{payment_method: PaymentMethod, payment_verification: PaymentVerification, amount_minor: int, reference: string|null, notes: string|null}>}
+     */
+    private function settlePayment(array $data, Money $total, ?string $tenantId): array
+    {
+        $verification = $this->resolvePaymentVerification($data['payment_verification'] ?? null);
+        $rawPayments = $data['payments'] ?? null;
+
+        if (is_array($rawPayments) && $rawPayments !== []) {
+            return $this->settleSplitPayment($rawPayments, $data, $total, $verification, $tenantId);
+        }
+
+        $paid = new Money((int) ($data['paid_minor'] ?? 0));
+        $method = $this->resolvePaymentMethod($data['payment_method'] ?? null);
+
+        $this->assertPaymentRules($method, $verification, $paid, $total, $tenantId);
+
+        return [
+            'method' => $method,
+            'verification' => $verification,
+            'paid' => $paid,
+            'change' => $this->resolveChange($method, $paid, $total),
+            'tenders' => [[
+                'payment_method' => $method,
+                'payment_verification' => $verification,
+                'amount_minor' => $paid->minor(),
+                'reference' => null,
+                'notes' => null,
+            ]],
+        ];
+    }
+
+    /**
+     * Pembayaran campuran (FR-05).
+     *
+     * Aturan yang ditegakkan:
+     *  - setiap tender harus bernominal positif dan metodenya ada di katalog;
+     *  - bila `paid_minor` ikut dikirim, ia wajib sama dengan jumlah tender
+     *    (tidak boleh ada dua sumber kebenaran yang berbeda);
+     *  - total tender non-tunai tidak boleh melebihi total, sehingga kembalian
+     *    selalu berasal dari tunai;
+     *  - tender instruksi (transfer manual, QRIS statis) tidak pernah
+     *    "terverifikasi", dan QRIS statis menuntut tenant yang sudah
+     *    mengunggah QRIS;
+     *  - satu tender tunggal lewat jalur ini tetap diperlakukan sebagai metode
+     *    tunggal (bukan "mixed"), dan QRIS tunggal tetap wajib tepat total.
+     *
+     * @param  list<mixed>  $rawPayments
+     * @param  array<string, mixed>  $data
+     * @return array{method: PaymentMethod, verification: PaymentVerification, paid: Money, change: Money, tenders: list<array{payment_method: PaymentMethod, payment_verification: PaymentVerification, amount_minor: int, reference: string|null, notes: string|null}>}
+     */
+    private function settleSplitPayment(
+        array $rawPayments,
+        array $data,
+        Money $total,
+        PaymentVerification $verification,
+        ?string $tenantId,
+    ): array {
+        $tenders = [];
+        $paidMinor = 0;
+        $nonCashMinor = 0;
+        $qrisRequested = false;
+
+        foreach ($rawPayments as $row) {
+            if (! is_array($row)) {
+                throw new InvalidPaymentAmount('Data pembayaran tidak valid.');
+            }
+
+            $method = $this->resolvePaymentMethod($row['payment_method'] ?? null);
+            $amount = (int) ($row['amount_minor'] ?? 0);
+
+            if ($amount <= 0) {
+                throw new InvalidPaymentAmount('Nominal tiap metode pembayaran harus lebih dari nol.');
+            }
+
+            // FR-05: transfer manual & QRIS statis hanyalah instruksi; kasir
+            // tidak dapat menyatakannya terverifikasi.
+            if ($method->isInstructionOnly() && $verification->isVerified()) {
+                throw InvalidPaymentVerification::notAllowedForInstructionOnly($method->value);
+            }
+
+            if (! $method->isCash()) {
+                // Total non-tunai dibatasi agar kembalian selalu dari tunai.
+                $nonCashMinor += $amount;
+            }
+
+            $qrisRequested = $qrisRequested || $method === PaymentMethod::QrisStatic;
+
+            $paidMinor += $amount;
+
+            $tenders[] = [
+                'payment_method' => $method,
+                'payment_verification' => $verification,
+                'amount_minor' => $amount,
+                'reference' => $this->cleanPaymentText($row['reference'] ?? null),
+                'notes' => $this->cleanPaymentText($row['notes'] ?? null),
+            ];
+        }
+
+        if (isset($data['paid_minor']) && (int) $data['paid_minor'] !== $paidMinor) {
+            throw new InvalidPaymentAmount('Total pembayaran tidak sama dengan jumlah metode pembayaran.');
+        }
+
+        if ($nonCashMinor > $total->minor()) {
+            throw new InvalidPaymentAmount('Pembayaran non-tunai tidak boleh melebihi total.');
+        }
+
+        $isSingle = count($tenders) === 1;
+
+        if ($isSingle && $tenders[0]['payment_method'] === PaymentMethod::QrisStatic && $paidMinor !== $total->minor()) {
+            throw new InvalidPaymentAmount('Pembayaran QRIS statis harus tepat sejumlah total (tidak ada kembalian).');
+        }
+
+        if ($qrisRequested) {
+            $tenant = $tenantId !== null ? Tenant::find($tenantId) : null;
+
+            if ($tenant === null || ! $tenant->hasQrisConfigured()) {
+                throw QrisNotConfigured::forTenant($tenantId);
+            }
+        }
+
+        $paid = new Money($paidMinor);
+        $change = $paidMinor > $total->minor() ? new Money($paidMinor - $total->minor()) : Money::zero();
+
+        return [
+            'method' => $isSingle ? $tenders[0]['payment_method'] : PaymentMethod::Mixed,
+            'verification' => $verification,
+            'paid' => $paid,
+            'change' => $change,
+            'tenders' => $tenders,
+        ];
+    }
+
+    /**
+     * Teks pendukung tender (referensi/catatan) dibersihkan dan dipotong agar
+     * tidak melebihi kolom database. `null`/kosong menjadi `null`.
+     */
+    private function cleanPaymentText(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : mb_substr($value, 0, 191);
+    }
+
+    /**
      * FR-05: hanya tunai yang menerima kelebihan bayar (kembalian); metode
      * lain harus tepat. QRIS statis bahkan tidak boleh kurang: nominal QR
      * sudah tetap, jadi bayar != total ditolak (lihat `assertPaymentRules`).
@@ -471,6 +682,12 @@ class CreateSale
 
         if ($method === '') {
             return PaymentMethod::Cash;
+        }
+
+        // "mixed" adalah hasil komposisi tender, bukan pilihan kasir: ia hanya
+        // boleh muncul lewat daftar `payments`, bukan lewat `payment_method`.
+        if ($method === PaymentMethod::Mixed->value) {
+            throw new \InvalidArgumentException('Metode "mixed" hanya dihasilkan dari daftar pembayaran, bukan dipilih langsung.');
         }
 
         return PaymentMethod::tryFrom($method)
