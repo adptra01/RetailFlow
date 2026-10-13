@@ -1,13 +1,17 @@
 <?php
 
+use App\Actions\Receivables\AddReceivableNote;
 use App\Actions\Receivables\RecordReceivablePayment;
 use App\Actions\Receivables\ReverseReceivablePayment;
+use App\Enums\CollectionChannel;
 use App\Enums\Permission;
+use App\Exceptions\Receivables\CollectionNoteNotAllowed;
 use App\Exceptions\Receivables\PaymentReversalNotAllowed;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\ReceivableClosed;
 use App\Models\Customer;
 use App\Models\Receivable;
+use App\Models\ReceivableNote;
 use App\Models\ReceivablePayment;
 use Flux\Flux;
 use Illuminate\Support\Str;
@@ -36,6 +40,11 @@ state([
     'showReversalModal' => false,
     'reversalPaymentId' => null,
     'reversalReason' => '',
+    'showNoteModal' => false,
+    'noteReceivableId' => null,
+    'noteChannel' => '',
+    'noteText' => '',
+    'noteContactedAt' => '',
 ]);
 
 // Folio mengikat segmen [Customer] menjadi model Customer dan meneruskannya
@@ -98,6 +107,27 @@ $selectedReversalPayment = computed(function () {
 
     return ReceivablePayment::with('receivable.transaction')->find($this->reversalPaymentId);
 });
+
+$collectionNotes = computed(function () {
+    return ReceivableNote::with(['receivable.transaction', 'author'])
+        ->whereHas('receivable', fn ($q) => $q->where('customer_id', $this->customer->id))
+        ->orderByDesc('contacted_at')
+        ->orderByDesc('id')
+        ->limit(50)
+        ->get();
+});
+
+$noteTargetReceivable = computed(function () {
+    if (! $this->noteReceivableId) {
+        return null;
+    }
+
+    return Receivable::with('transaction')->find($this->noteReceivableId);
+});
+
+$channelOptions = computed(fn () => collect(CollectionChannel::cases())
+    ->map(fn (CollectionChannel $channel) => ['value' => $channel->value, 'label' => $channel->label()])
+    ->all());
 
 $openPaymentModal = function ($receivableId) {
     $receivable = Receivable::findOrFail($receivableId);
@@ -208,6 +238,52 @@ $correctPayment = function () {
     Flux::toast(variant: 'success', text: __('Pembayaran piutang dikoreksi.'));
 };
 
+/** Buka modal catatan penagihan untuk satu piutang (FR-07). */
+$openNoteModal = function (int $receivableId) {
+    $receivable = Receivable::findOrFail($receivableId);
+
+    abort_unless($receivable->customer_id === $this->customer->id, 404);
+
+    $this->noteReceivableId = $receivable->id;
+    $this->noteChannel = '';
+    $this->noteText = '';
+    $this->noteContactedAt = now()->format('Y-m-d');
+    $this->showNoteModal = true;
+};
+
+/** Simpan catatan penagihan (FR-07: append-only + tercatat di audit). */
+$saveNote = function () {
+    $this->validate([
+        'noteReceivableId' => 'required|integer',
+        'noteText' => 'required|string|min:2|max:1000',
+        'noteChannel' => 'nullable|string|max:32',
+        'noteContactedAt' => 'nullable|date',
+    ]);
+
+    $receivable = Receivable::findOrFail($this->noteReceivableId);
+
+    abort_unless($receivable->customer_id === $this->customer->id, 404);
+
+    try {
+        app(AddReceivableNote::class)->handle([
+            'receivable_id' => $receivable->id,
+            'note' => $this->noteText,
+            'channel' => $this->noteChannel ?: null,
+            'contacted_at' => $this->noteContactedAt ?: null,
+            'user_id' => auth()->id(),
+            'tenant_id' => auth()->user()?->tenant_id,
+        ]);
+    } catch (CollectionNoteNotAllowed $e) {
+        Flux::toast(variant: 'error', text: $e->getMessage());
+
+        return;
+    }
+
+    $this->showNoteModal = false;
+    $this->reset(['noteReceivableId', 'noteChannel', 'noteText', 'noteContactedAt']);
+    Flux::toast(variant: 'success', text: __('Catatan penagihan tersimpan.'));
+};
+
 ?>
 
 <x-layouts::app :title="__('Customer Detail')">
@@ -303,6 +379,9 @@ $correctPayment = function () {
                                                 <flux:menu.item icon="credit-card" wire:click="openPaymentModal({{ $receivable->id }})">
                                                     {{ __('Record Payment') }}
                                                 </flux:menu.item>
+                                                <flux:menu.item icon="chat-bubble-left-right" wire:click="openNoteModal({{ $receivable->id }})">
+                                                    {{ __('Add Collection Note') }}
+                                                </flux:menu.item>
                                                 <flux:menu.item icon="eye" href="/transactions/{{ $receivable->transaction_id }}">
                                                     {{ __('View Transaction') }}
                                                 </flux:menu.item>
@@ -375,6 +454,39 @@ $correctPayment = function () {
                 </div>
 
                 {{ $this->paymentHistory->links() }}
+            </div>
+
+            {{-- Collection Notes (FR-07: catatan penagihan) --}}
+            <div class="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+                <div class="mb-4 flex items-center justify-between">
+                    <div>
+                        <flux:heading size="lg">{{ __('Collection Notes') }}</flux:heading>
+                        <flux:subheading>{{ __('Riwayat penagihan piutang pelanggan ini.') }}</flux:subheading>
+                    </div>
+                </div>
+
+                @if ($this->collectionNotes->isEmpty())
+                    <p class="text-sm text-zinc-500">{{ __('Belum ada catatan penagihan.') }}</p>
+                @else
+                    <ul class="space-y-3">
+                        @foreach ($this->collectionNotes as $note)
+                            <li class="rounded-lg border border-zinc-100 p-3 dark:border-zinc-700" wire:key="note-{{ $note->id }}">
+                                <div class="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                                    <span>{{ $note->contacted_at?->format('d M Y H:i') ?? $note->created_at->format('d M Y H:i') }}</span>
+                                    @if ($note->channel)
+                                        @php($channelLabel = \App\Enums\CollectionChannel::tryFrom($note->channel)?->label() ?? $note->channel)
+                                        <flux:badge size="sm" color="zinc">{{ $channelLabel }}</flux:badge>
+                                    @endif
+                                    <span class="font-medium">{{ $note->receivable->transaction?->invoice_number ?? 'N/A' }}</span>
+                                    @if ($note->author)
+                                        <span>· {{ $note->author->name }}</span>
+                                    @endif
+                                </div>
+                                <p class="mt-1 text-sm text-zinc-700 dark:text-zinc-200">{{ $note->note }}</p>
+                            </li>
+                        @endforeach
+                    </ul>
+                @endif
             </div>
 
             {{-- Payment Modal --}}
@@ -451,6 +563,51 @@ $correctPayment = function () {
                 </div>
             </flux:modal>
             @endcan
+
+            {{-- Collection Note Modal (FR-07) --}}
+            <flux:modal wire:model.self="showNoteModal" class="max-w-lg">
+                <div class="space-y-6">
+                    <div>
+                        <flux:heading size="lg">{{ __('Catatan Penagihan') }}</flux:heading>
+                        <flux:subheading>{{ __('Catat aktivitas penagihan untuk piutang ini.') }}</flux:subheading>
+                    </div>
+
+                    @if ($this->noteTargetReceivable)
+                    <div class="rounded-lg border p-4 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-zinc-600 dark:text-zinc-400">{{ __('Invoice:') }}</span>
+                            <strong>{{ $this->noteTargetReceivable->transaction?->invoice_number ?? 'N/A' }}</strong>
+                        </div>
+                        <div class="mt-1 flex justify-between">
+                            <span class="text-sm text-zinc-600 dark:text-zinc-400">{{ __('Remaining:') }}</span>
+                            <span>{{ Number::currency($this->noteTargetReceivable->remaining_minor, 'IDR', 'id') }}</span>
+                        </div>
+                    </div>
+                    @endif
+
+                    <flux:textarea wire:model="noteText" rows="3"
+                        label="{{ __('Catatan') }}"
+                        placeholder="{{ __('Contoh: dihubungi via WhatsApp, janji bayar minggu depan') }}" />
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <flux:select wire:model="noteChannel" label="{{ __('Saluran') }}">
+                            <flux:select.option value="">{{ __('—') }}</flux:select.option>
+                            @foreach ($this->channelOptions as $option)
+                                <flux:select.option value="{{ $option['value'] }}">{{ $option['label'] }}</flux:select.option>
+                            @endforeach
+                        </flux:select>
+
+                        <flux:input wire:model="noteContactedAt" type="date" label="{{ __('Tanggal Dihubungi') }}" />
+                    </div>
+
+                    <div class="flex justify-end gap-2">
+                        <flux:modal.close><flux:button variant="filled">{{ __('Cancel') }}</flux:button></flux:modal.close>
+                        <flux:button variant="primary" wire:click="saveNote" :disabled="!$noteText">
+                            {{ __('Simpan Catatan') }}
+                        </flux:button>
+                    </div>
+                </div>
+            </flux:modal>
         </div>
     @endvolt
 </x-layouts::app>

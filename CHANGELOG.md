@@ -1,3 +1,34 @@
+# Rebuild POS Universal — Fase 5: Catatan Penagihan Piutang (FR-07, Increment 51) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (FR-07 daftar fitur: "Catatan penagihan").
+
+## Latar
+Increment 50 menutup dua kewajiban FR-07 (jatuh tempo + batas kredit). Satu item FR-07 masih kosong: **catatan penagihan** — tidak ada tempat mencatat hasil penagihan (dihubungi via apa, kapan, hasilnya apa), sehingga riwayat penagihan hanya hidup di ingatan kasir/admin. Sisa FR-07 lain ("daftar piutang jatuh tempo") sudah terjawab laporan umur piutang yang kini bermakna karena `due_at` sudah terisi sejak Increment 50.
+
+## Perubahan
+
+### Domain
+- **`database/migrations/2026_10_13_000004_create_receivable_notes_table.php`** — tabel `receivable_notes` (aditif): `uuid`, `tenant_id`, `receivable_id`, `channel`, `note` (1000), `contacted_at`, `created_by`, `version`.
+- **`Models\ReceivableNote`** — `BelongsToTenant` + `HasSyncIdentity` + `JournalSyncChanges` (konsisten dengan entitas domain lain), relasi `receivable()` & `author()`.
+- **`Actions\Receivables\AddReceivableNote`** — satu-satunya jalur pencatatan penagihan. Menegakkan: catatan wajib (kosong ditolak), saluran divalidasi terhadap enum, piutang dicari dengan `withoutGlobalScopes` + filter `tenant_id` eksplisit (catatan tak bisa menempel ke piutang tenant lain), **append-only** (tanpa jalur ubah/hapus), `contacted_at` default `now()` bila tak diisi, satu baris audit `receivable.note_added`, semuanya atomik.
+- **`Enums\CollectionChannel`** — telepon, WhatsApp, SMS, kunjungan, surat, lainnya (+ `label()` bahasa Indonesia) agar UI dan validasi memakai daftar yang sama.
+- **`Exceptions\Receivables\CollectionNoteNotAllowed`** — catatan kosong / piutang tak ditemukan / saluran tak dikenal (+ respons JSON 422).
+
+### UI
+- **`resources/views/pages/customers/[Customer]/show.blade.php`** — kartu **"Collection Notes"** (riwayat penagihan pelanggan: waktu kontak, badge saluran, nomor invoice, siapa yang menagih, isi catatan; 50 terbaru) plus aksi **"Add Collection Note"** pada menu tiap piutang terbuka → modal (isi catatan, saluran, tanggal dihubungi). Guard: modal hanya bisa dibuka untuk piutang milik pelanggan halaman itu (`abort_unless` 404), dan aksi simpan memvalidasi ulang (isi ≥ 2 karakter, tanggal sah).
+
+### Pengujian
+- **`tests/Feature/Receivables/CollectionNoteTest.php`** (8) — pencatatan lengkap + audit, `contacted_at` default `now()`, saluran opsional, catatan kosong ditolak, piutang tak ada ditolak, saluran tak dikenal ditolak, append-only (2 catatan tersimpan berurutan), batas tenant (piutang tenant lain → ditolak).
+- **`tests/Feature/Customers/CollectionNoteUiTest.php`** (4) — halaman menampilkan catatan yang ada (teks, invoice, label saluran), Owner mencatat catatan lewat UI (state + basis data + audit + tampil pada mount ulang), catatan kosong ditolak validasi & tidak tersimpan, catatan tak bisa menyasar piutang pelanggan lain (404).
+- Catatan teknis untuk pengujian berikutnya: isi halaman detail pelanggan dirender sebagai **fragmen Volt anak**, sehingga `html()` setelah aksi tidak memuat body halaman — assertSee harus dilakukan pada mount (pola sama dengan yang ditemukan di Increment 50 untuk halaman POS).
+
+## Status suite
+- **833 passed / 0 failed / 4 skipped** (2886 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 9 file, 1 perbaikan gaya.
+- Dengan ini seluruh daftar fitur FR-07 sudah terwujud. Utang yang masih terbuka: adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, endpoint §18 untuk klien perangkat, dokumentasi Fase 6, dan pemeriksaan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`).
+
+---
+
 # Rebuild POS Universal — Fase 5: Batas Kredit & Jatuh Tempo Piutang (FR-07, Increment 50) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

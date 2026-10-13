@@ -27,6 +27,9 @@ enum AuditAction: string
     // Koreksi/pembatalan pembayaran piutang (ReverseReceivablePayment, FR-07).
     case ReceivablePaymentCorrected = 'receivable.payment.corrected';
 
+    // Catatan penagihan piutang (AddReceivableNote, FR-07).
+    case ReceivableNoteAdded = 'receivable.note_added';
+
     // Pengelolaan pengguna (ManageUser, izin `user.manage`).
     case UserCreated = 'user.created';
 
