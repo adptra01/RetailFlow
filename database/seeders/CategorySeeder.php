@@ -3,12 +3,17 @@
 namespace Database\Seeders;
 
 use App\Models\Category;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class CategorySeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         $categories = [
             ['name' => 'Makanan Ringan', 'slug' => 'makanan-ringan', 'description' => 'Snack, keripik, biskuit, permen'],
             ['name' => 'Makanan Berat', 'slug' => 'makanan-berat', 'description' => 'Mie instan, sarden, bumbu masak'],
@@ -21,7 +26,7 @@ class CategorySeeder extends Seeder
         ];
 
         foreach ($categories as $category) {
-            Category::create($category);
+            Category::firstOrCreate(['slug' => $category['slug']], $category);
         }
     }
 }

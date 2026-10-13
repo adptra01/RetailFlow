@@ -5,12 +5,17 @@ namespace Database\Seeders;
 use App\Models\StockMovement;
 use App\Models\TransactionItem;
 use App\Models\User;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class StockMovementSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         if (StockMovement::count() > 0) {
             $this->command->warn('Stock movements already exist, skipping.');
 

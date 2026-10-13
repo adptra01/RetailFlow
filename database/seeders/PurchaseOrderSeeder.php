@@ -7,13 +7,19 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Support\Money\Money;
 use Carbon\Carbon;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class PurchaseOrderSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         if (PurchaseOrder::count() > 0) {
             $this->command->warn('Purchase orders already exist, skipping.');
 
@@ -52,13 +58,15 @@ class PurchaseOrderSeeder extends Seeder
                 'supplier_id' => $supplier->id,
                 'user_id' => $users->random()->id,
                 'status' => $status,
-                'total_amount' => 0,
+                'subtotal_minor' => 0,
+                'discount_minor' => 0,
+                'total_minor' => 0,
                 'notes' => rand(0, 1) ? fake()->sentence() : null,
                 'created_at' => $createdAt,
                 'updated_at' => $createdAt,
             ]);
 
-            $total = 0;
+            $totalMinor = 0;
             $itemCount = rand(1, 5);
             $selectedProducts = $products->random(min($itemCount, $products->count()));
 
@@ -69,10 +77,12 @@ class PurchaseOrderSeeder extends Seeder
                 }
 
                 $quantity = rand(5, 50);
+                // Kolom harga master masih desimal major; nilai kebenaran
+                // transaksi disimpan sebagai integer minor unit (§17.1).
                 $basePrice = $unit->purchase_price ?: $product->buy_price ?: 0;
-                $unitPrice = round(max(100, $basePrice * (1 + rand(-1, 3) * 0.05)), -2);
-                $subtotal = $quantity * $unitPrice;
-                $total += $subtotal;
+                $unitPriceMinor = Money::fromMajor((float) round(max(100, $basePrice * (1 + rand(-1, 3) * 0.05)), -2))->minor();
+                $lineSubtotalMinor = $unitPriceMinor * $quantity;
+                $totalMinor += $lineSubtotalMinor;
 
                 $received = $status === 'received' ? $quantity
                     : ($status === 'partial' ? rand(1, $quantity) : 0);
@@ -82,14 +92,18 @@ class PurchaseOrderSeeder extends Seeder
                     'product_id' => $product->id,
                     'product_unit_id' => $unit->id,
                     'quantity' => $quantity,
-                    'unit_price' => $unitPrice,
-                    'subtotal' => $subtotal,
+                    'unit_price_minor' => $unitPriceMinor,
+                    'discount_minor' => 0,
+                    'subtotal_minor' => $lineSubtotalMinor,
                     'received_quantity' => $received,
                 ]);
             }
 
-            if ($total > 0) {
-                $po->update(['total_amount' => $total]);
+            if ($totalMinor > 0) {
+                $po->update([
+                    'subtotal_minor' => $totalMinor,
+                    'total_minor' => $totalMinor,
+                ]);
             }
         }
 

@@ -11,17 +11,31 @@ use App\Models\PurchaseReturnItem;
 use App\Models\SalesReturn;
 use App\Models\SalesReturnItem;
 use App\Models\Supplier;
-use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
+use App\Support\Money\Money;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
+/**
+ * Retur demo (§17.1): nilai kebenaran integer minor unit, sedangkan kolom
+ * desimal legacy pada tabel penjualan diisi sebagai CERMIN MAJOR yang benar
+ * (sebelumnya nilai minor ditulis apa adanya ke kolom major, sehingga retur
+ * tampil 100× lebih besar di layar lama).
+ *
+ * Tabel pembelian sudah tidak punya kolom desimal legacy sama sekali, jadi
+ * hanya kolom `*_minor` yang diisi.
+ */
 class ReturnSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $tenant = $this->demoTenant();
         $users = User::all();
+
         if ($users->isEmpty()) {
             return;
         }
@@ -29,29 +43,29 @@ class ReturnSeeder extends Seeder
         // Sales Returns
         if (SalesReturn::count() === 0) {
             $transactions = Transaction::inRandomOrder()->take(5)->get();
-            $tenantId = Tenant::query()->value('id');
-            $userId = $users->random()->id;
+            $userId = $users->random()->getKey();
 
             foreach ($transactions as $transaction) {
-                $items = TransactionItem::where('transaction_id', $transaction->id)->get();
+                $items = TransactionItem::where('transaction_id', $transaction->getKey())->get();
                 if ($items->isEmpty()) {
                     continue;
                 }
 
                 $returnItems = $items->random(min(rand(1, 2), $items->count()));
                 $totalMinor = 0;
+
                 // `created_at` diisi langsung (bukan mass assignment) agar
                 // tanggal demo tetap mengikuti tanggal transaksi.
                 $return = new SalesReturn([
                     'return_number' => 'RTS-'.$transaction->created_at->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
-                    'transaction_id' => $transaction->id,
-                    'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->id,
+                    'transaction_id' => $transaction->getKey(),
+                    'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->getKey(),
                     'reason' => fake()->randomElement([
                         'Barang rusak', 'Kadaluarsa', 'Salah produk',
                         'Pelanggan komplain', 'Barang tidak sesuai',
                     ]),
                     'user_id' => $userId,
-                    'tenant_id' => $tenantId,
+                    'tenant_id' => $tenant->getKey(),
                 ]);
                 $return->created_at = $transaction->created_at->addDays(rand(1, 3));
                 $return->save();
@@ -59,26 +73,28 @@ class ReturnSeeder extends Seeder
                 foreach ($returnItems as $item) {
                     $qty = rand(1, $item->quantity);
                     $sold = (int) $item->quantity;
-                    // Data demo lama hanya punya cermin desimal (minor = 0);
-                    // minor tetap sumber kebenaran bila tersedia.
-                    $lineMinor = (int) ($item->subtotal_minor ?: round((float) $item->subtotal));
+                    // Minor adalah sumber kebenaran; cermin desimal lama hanya
+                    // dipakai bila data demo sebelumnya belum punya minor.
+                    $lineMinor = (int) ($item->subtotal_minor ?: Money::fromMajor((float) $item->subtotal)->minor());
                     // Nilai retur proporsional seperti domain (setelah diskon baris).
                     $subtotalMinor = $sold > 0 ? (int) round($lineMinor * $qty / $sold) : 0;
+                    $unitPriceMinor = $qty > 0 ? (int) round($subtotalMinor / $qty) : 0;
                     $totalMinor += $subtotalMinor;
 
                     SalesReturnItem::create([
-                        'sales_return_id' => $return->id,
-                        'transaction_item_id' => $item->id,
+                        'sales_return_id' => $return->getKey(),
+                        'transaction_item_id' => $item->getKey(),
                         'product_id' => $item->product_id,
                         'product_unit_id' => $item->product_unit_id ?? ProductUnit::where('product_id', $item->product_id)->value('id'),
                         'qty' => $qty,
-                        'unit_price_minor' => $qty > 0 ? (int) round($subtotalMinor / $qty) : 0,
+                        'unit_price_minor' => $unitPriceMinor,
                         'discount_minor' => 0,
                         'subtotal_minor' => $subtotalMinor,
-                        'price' => $qty > 0 ? (int) round($subtotalMinor / $qty) : 0,
-                        'subtotal' => $subtotalMinor,
+                        // Cermin desimal legacy (major, bukan minor).
+                        'price' => (new Money($unitPriceMinor))->major(),
+                        'subtotal' => (new Money($subtotalMinor))->major(),
                         'reason' => $return->reason,
-                        'tenant_id' => $tenantId,
+                        'tenant_id' => $tenant->getKey(),
                     ]);
                 }
 
@@ -91,7 +107,7 @@ class ReturnSeeder extends Seeder
                     'receivable_adjustment_minor' => 0,
                     'refund_minor' => $totalMinor,
                     'stock_restored' => false,
-                    'total' => $totalMinor,
+                    'total' => (new Money($totalMinor))->major(),
                 ]);
             }
         }
@@ -102,44 +118,52 @@ class ReturnSeeder extends Seeder
                 ->inRandomOrder()->take(4)->get();
 
             foreach ($purchaseOrders as $po) {
-                $items = PurchaseOrderItem::where('purchase_order_id', $po->id)->get();
+                $items = PurchaseOrderItem::where('purchase_order_id', $po->getKey())->get();
                 if ($items->isEmpty()) {
                     continue;
                 }
 
                 $returnItems = $items->random(min(rand(1, 2), $items->count()));
-                $total = 0;
+                $totalMinor = 0;
+
                 $return = PurchaseReturn::create([
                     'return_number' => 'RTP-'.$po->created_at->format('YmdHis').'-'.strtoupper(substr(uniqid(), -4)),
-                    'purchase_order_id' => $po->id,
-                    'supplier_id' => $po->supplier_id ?? Supplier::inRandomOrder()->first()?->id,
-                    'total' => 0,
+                    'purchase_order_id' => $po->getKey(),
+                    'supplier_id' => $po->supplier_id ?? Supplier::inRandomOrder()->first()?->getKey(),
+                    'subtotal_minor' => 0,
+                    'discount_minor' => 0,
+                    'total_minor' => 0,
                     'reason' => fake()->randomElement([
                         'Barang cacat', 'Kualitas tidak sesuai', 'Salah kirim',
                         'Jumlah tidak sesuai', 'Barang rusak',
                     ]),
-                    'user_id' => $users->random()->id,
+                    'user_id' => $users->random()->getKey(),
                     'created_at' => ($po->created_at ?? now())->addDays(rand(1, 5)),
                 ]);
 
                 foreach ($returnItems as $item) {
                     $qty = rand(1, $item->quantity);
-                    $subtotal = $qty * $item->unit_price;
-                    $total += $subtotal;
+                    $unitPriceMinor = (int) $item->unit_price_minor;
+                    $subtotalMinor = $qty * $unitPriceMinor;
+                    $totalMinor += $subtotalMinor;
 
                     PurchaseReturnItem::create([
-                        'purchase_return_id' => $return->id,
+                        'purchase_return_id' => $return->getKey(),
                         'product_id' => $item->product_id,
                         'product_unit_id' => $item->product_unit_id,
                         'qty' => $qty,
-                        'price' => $item->unit_price,
-                        'subtotal' => $subtotal,
+                        'price_minor' => $unitPriceMinor,
+                        'discount_minor' => 0,
+                        'subtotal_minor' => $subtotalMinor,
                         'reason' => $return->reason,
                     ]);
                 }
 
-                if ($total > 0) {
-                    $return->update(['total' => $total]);
+                if ($totalMinor > 0) {
+                    $return->update([
+                        'subtotal_minor' => $totalMinor,
+                        'total_minor' => $totalMinor,
+                    ]);
                 }
             }
         }

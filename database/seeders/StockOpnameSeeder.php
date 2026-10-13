@@ -5,12 +5,17 @@ namespace Database\Seeders;
 use App\Models\Product;
 use App\Models\StockOpname;
 use App\Models\User;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class StockOpnameSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         if (StockOpname::count() > 0) {
             $this->command->warn('Stock opnames already exist, skipping.');
 

@@ -1,3 +1,44 @@
+# Rebuild POS Universal — Fase 5: Data Demo Ber-tenant & Minor Unit (Seeder) (Increment 56) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§12 isolasi tenant; §17.1 nilai uang integer minor unit; FR-07 piutang & penagihan; FR-05 aturan pembayaran; §11.1 idempotensi). Perintah operasional: `php artisan db:seed`.
+
+## Latar
+Perintah yang paling dasar untuk mencoba aplikasi — `php artisan db:seed` — ternyata **gagal total** dan sisanya menghasilkan data yang tidak berguna. Tiga cacat bertumpuk:
+1. `PurchaseOrderSeeder` menulis `purchase_orders.total_amount`, kolom yang sudah dihapus `2026_10_12_000003_finish_purchase_sync_fields` → `SQLSTATE[42S22] Unknown column 'total_amount'` dan seeder berhenti di situ, sehingga semua seeder setelahnya (stok, opname, retur, pembayaran, pengaturan) **tidak pernah dijalankan**.
+2. Seluruh baris demo lahir dengan `tenant_id` NULL. Scope/isi tenant otomatis (`BelongsToTenant`) hanya bekerja bila `TenantContext` terikat; CLI seeding tidak mengikat siapa pun. Akibatnya data demo tak akan pernah terlihat di UI — setiap permintaan selalu disaring ke tenant aktif.
+3. Seluruh kolom `*_minor` bernilai 0 (transaksi, item, pesanan pembelian, retur) sehingga laporan & piutang demo tampak kosong; `ReturnSeeder` bahkan menulis nilai MINOR ke kolom desimal legacy MAJOR (retur tampil 100× di layar lama); `supplier_payments` selalu nol karena kolom `amount` bukan fillable dan `$po->total_amount` sudah tiada.
+
+Ditemukan saat menguji Increment 55 di database MySQL terpisah (`seedercheck`), bukan dari asumsi.
+
+## Keputusan desain
+- **Tenant dulu, baru data.** Trait `SeedsDemoTenant` mengikat `TenantContext` ke tenant default (dan memanggil `TenantSeeder` bila belum ada), dipakai sepuluh seeder + `DatabaseSeeder`. Ini membuat tiap seeder dapat dijalankan sendiri (`php artisan db:seed --class=ProductSeeder`) tanpa bergantung urutan, dan menjamin seluruh baris ber-tenant.
+- **Transaksi demo lahir dari jalur domain, bukan penulisan kolom.** `TransactionSeeder` memakai `CreateSale` — satu-satunya penulis yang boleh menghitung total, memotong stok, dan membuka piutang. Demonstrasi pun menegakkan aturan nyata: saat seeder mengirim kelebihan bayar lewat non-tunai, domain menolak (`kembalian hanya dari tunai`), dan seeder disesuaikan. Yang di-*backdate* hanya metadata waktu (`transactions.created_at`), bukan nilai uang/stok.
+- **Penagihan piutang demo memakai `RecordReceivablePayment`** (FR-07) sehingga `remaining_minor` dan baris pembayaran konsisten — bukan diedit langsung (aturan "saldo piutang tidak boleh diubah dengan mengedit angka").
+- **Cermin desimal ditulis lewat `Money`**, bukan aritmetika mentah, sehingga tabel penjualan yang masih punya kolom desimal legacy tetap benar untuk layar lama tanpa bergantung pada `minor_exponent` (saat ini 0).
+- **Semua seeder demo dibuat idempoten** (`firstOrCreate` untuk data master, guard `count()` untuk data transaksional, user demo idempoten) supaya `db:seed` aman dijalankan ulang, mis. setelah `migrate:fresh` sebagian.
+
+## Perubahan
+- **`database/seeders/Concerns/SeedsDemoTenant.php`** (baru) — pengikat tenant untuk seeder CLI.
+- **`database/seeders/DatabaseSeeder.php`** — mengikat tenant sebelum data ditulis; user `admin`/`pemilik` dibuat idempoten (`firstOrCreate` by email).
+- **`database/seeders/TransactionSeeder.php`** — ditulis ulang memakai `CreateSale`; ~25% transaksi kredit (membuka piutang demo), tanggal disebar 30 hari terakhir, menghormati ketersediaan stok.
+- **`database/seeders/PurchaseOrderSeeder.php`** — hanya kolom `*_minor` (legacy sudah dihapus); harga dari `purchase_price`/`buy_price` dikonversi via `Money`.
+- **`database/seeders/ReturnSeeder.php`** — retur jual: `*_minor` sebagai sumber kebenaran + cermin desimal major yang benar; retur beli: hanya `*_minor` (sebelumnya nol semua).
+- **`database/seeders/PaymentSeeder.php`** — penagihan piutang via `RecordReceivablePayment`; `supplier_payments.amount_minor`; cicilan `customer_payments` dihitung dari nilai minor.
+- **`database/seeders/{Brand,Category,Supplier,Customer,Product}Seeder.php`** — idempoten (`firstOrCreate`).
+- **`database/seeders/{StockMovement,StockOpname}Seeder.php`** — mengikat tenant sebelum guard.
+- **`tests/Feature/Database/DemoSeederTest.php`** (baru) — 8 tes kontrak data demo.
+
+## Pengujian
+- **`tests/Feature/Database/DemoSeederTest.php`** (8) — seeder mengisi toko demo; **setiap** baris (17 tabel) ber-tenant dan tak ada `tenant_id` NULL; uang penjualan tersimpan minor & cermin legacy konsisten (`Money`); saldo piutang cocok dengan jumlah pembayarannya (SQL silang); uang pembelian/retur beli minor & tidak nol; retur jual cermin minor; seeder individual tetap mengikat tenant; `DatabaseSeeder` **idempoten** (dijalankan dua kali, jumlah baris tetap).
+- Diverifikasi juga di **MySQL produksi** (database terpisah `seedercheck`, lalu dihapus): `db:seed` dua kali idempoten, 0 baris tanpa tenant, cermin legacy == minor, dan `remaining_minor = original_amount_minor − Σ pembayaran`.
+
+## Status suite
+- **914 passed / 0 failed / 4 skipped** (3660 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 18 file, 1 perbaikan indentasi.
+- Sisa pekerjaan Fase 5: menyatukan dua jalur piutang (`receivables` domain vs `customer_payments` legacy), memindahkan pembaca UI lama (dashboard/laporan/struk) ke minor unit lalu menghapus kolom desimal legacy tabel penjualan, memindahkan harga produk/unit ke minor unit, adaptor payment gateway/QRIS dinamis (menunggu penyedia), OCR (FR-03), barcode kamera, multi-cabang/transfer stok, dokumentasi Fase 6, dead code `app/Models/Recipe.php`, `RolePermissionSeeder` legacy.
+
+---
+
 # Rebuild POS Universal — Fase 5: Endpoint Sisa API §18 — Pembayaran Piutang & Laporan Penjualan + Pengetatan Idempotensi (Increment 55) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

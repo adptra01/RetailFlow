@@ -3,12 +3,17 @@
 namespace Database\Seeders;
 
 use App\Models\Customer;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class CustomerSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         $customers = [
             ['name' => 'Ahmad Fauzi', 'phone' => '081234567890', 'credit_limit' => 500000],
             ['name' => 'Siti Nurhaliza', 'phone' => '082345678901', 'credit_limit' => 1000000],
@@ -23,7 +28,7 @@ class CustomerSeeder extends Seeder
         ];
 
         foreach ($customers as $customer) {
-            Customer::create($customer);
+            Customer::firstOrCreate(['phone' => $customer['phone']], $customer);
         }
     }
 }

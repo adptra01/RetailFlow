@@ -6,12 +6,17 @@ use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\Supplier;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class ProductSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         $brands = Brand::pluck('id', 'name');
         $suppliers = Supplier::pluck('id', 'name');
         $cat = fn ($name) => Category::where('name', $name)->value('id');
@@ -48,25 +53,27 @@ class ProductSeeder extends Seeder
             ];
             unset($p['units']);
 
-            $product = Product::create([
-                'category_id' => $cat($p['category']),
-                'brand_id' => $p['brand'] ? ($brands[$p['brand']] ?? null) : null,
-                'supplier_id' => $suppliers[$p['supplier']] ?? null,
-                'name' => $p['name'],
-                'slug' => str()->slug($p['name']),
-                'sku' => $p['sku'],
-                'barcode' => $p['barcode'] ?? null,
-                'buy_price' => $p['buy_price'] ?? 0,
-                'price' => $p['price'],
-                'stock' => $p['stock'] ?? 0,
-                'min_stock' => $p['min_stock'] ?? 0,
-                'is_unlimited_stock' => $p['is_unlimited_stock'] ?? false,
-                'is_active' => true,
-                'description' => $p['name'],
-            ]);
+            $product = Product::firstOrCreate(
+                ['sku' => $p['sku']],
+                [
+                    'category_id' => $cat($p['category']),
+                    'brand_id' => $p['brand'] ? ($brands[$p['brand']] ?? null) : null,
+                    'supplier_id' => $suppliers[$p['supplier']] ?? null,
+                    'name' => $p['name'],
+                    'slug' => str()->slug($p['name']),
+                    'barcode' => $p['barcode'] ?? null,
+                    'buy_price' => $p['buy_price'] ?? 0,
+                    'price' => $p['price'],
+                    'stock' => $p['stock'] ?? 0,
+                    'min_stock' => $p['min_stock'] ?? 0,
+                    'is_unlimited_stock' => $p['is_unlimited_stock'] ?? false,
+                    'is_active' => true,
+                    'description' => $p['name'],
+                ],
+            );
 
             foreach ($units as $unit) {
-                $product->units()->create($unit);
+                $product->units()->firstOrCreate(['name' => $unit['name']], $unit);
             }
         }
     }

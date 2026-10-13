@@ -23,7 +23,7 @@ class BrandSeeder extends Seeder
         ];
 
         foreach ($brands as $brand) {
-            Brand::create($brand);
+            Brand::firstOrCreate(['name' => $brand['name']], $brand);
         }
     }
 }

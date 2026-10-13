@@ -3,12 +3,17 @@
 namespace Database\Seeders;
 
 use App\Models\Supplier;
+use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
 class SupplierSeeder extends Seeder
 {
+    use SeedsDemoTenant;
+
     public function run(): void
     {
+        $this->demoTenant();
+
         $suppliers = [
             ['name' => 'PT Indofood Sukses Makmur', 'contact_person' => 'Budi Santoso', 'phone' => '021-12345678', 'address' => 'Jakarta Pusat'],
             ['name' => 'CV Sinar Jaya Distribusi', 'contact_person' => 'Agus Wijaya', 'phone' => '031-87654321', 'address' => 'Surabaya'],
@@ -18,7 +23,7 @@ class SupplierSeeder extends Seeder
         ];
 
         foreach ($suppliers as $supplier) {
-            Supplier::create($supplier);
+            Supplier::firstOrCreate(['name' => $supplier['name']], $supplier);
         }
     }
 }
