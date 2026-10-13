@@ -91,6 +91,27 @@ return [
         'batch_size' => (int) env('POS_SYNC_BATCH_SIZE', 100),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | API untuk klien perangkat (§18)
+    |--------------------------------------------------------------------------
+    |
+    | Autentikasi server memakai mekanisme yang didukung Laravel (§15):
+    | Sanctum (token per pengguna) untuk identitas MANUSIA, sedangkan
+    | identitas PERANGKAT tetap token di tabel `devices` (§12, §15: "Perangkat
+    | memiliki ID dan token unik") yang dipakai endpoint sinkronisasi.
+    |
+    | Token pengguna dibatasi masa berlakunya — token yang bocor tidak berlaku
+    | selamanya. Nilai 0 berarti tanpa kedaluwarsa (tidak disarankan).
+    |
+    */
+
+    'api' => [
+        'token_days' => (int) env('POS_API_TOKEN_DAYS', 30),
+        // Pembatasan percobaan login (per menit, per alamat IP) — NFR-03.
+        'login_attempts_per_minute' => (int) env('POS_API_LOGIN_ATTEMPTS', 10),
+    ],
+
     'sync' => [
         'retry_backoff' => [1, 5, 10],
         'max_retries' => (int) env('POS_SYNC_MAX_RETRIES', 5),

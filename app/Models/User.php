@@ -14,13 +14,14 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
 use Laravel\Fortify\TwoFactorAuthenticatable;
+use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable(['name', 'email', 'password', 'tenant_id', 'is_active'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use BelongsToTenant, HasFactory, HasSyncIdentity, Notifiable, \Spatie\Permission\Traits\HasRoles, TwoFactorAuthenticatable;
+    use BelongsToTenant, HasApiTokens, HasFactory, HasSyncIdentity, Notifiable, \Spatie\Permission\Traits\HasRoles, TwoFactorAuthenticatable;
 
     protected function casts(): array
     {

@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\Api\V1\DeviceRegisterController;
+use App\Http\Controllers\Api\V1\LoginController;
 use App\Http\Controllers\Api\V1\PaymentWebhookController;
 use App\Http\Controllers\Api\V1\SyncPullController;
 use App\Http\Controllers\Api\V1\SyncPushController;
@@ -10,17 +12,33 @@ use Illuminate\Support\Facades\Route;
 | API v1 (§18)
 |--------------------------------------------------------------------------
 |
-| Endpoint sinkronisasi diautentikasi lewat token perangkat (middleware
-| `device`), bukan sesi pengguna. Tenant ditentukan dari perangkat, bukan
-| dari body request (§12).
+| Dua jenis identitas dipakai (§15):
 |
-| Endpoint webhook pembayaran berada DI LUAR grup itu: pemanggilnya adalah
-| penyedia pembayaran, yang membuktikan identitasnya dengan tanda tangan
-| (plan §14/§15), bukan token perangkat.
+|  - Token PERANGKAT (middleware `device`) untuk endpoint sinkronisasi;
+|    tenant ditentukan dari perangkat, bukan dari body request (§12).
+|  - Token PENGGUNA (Sanctum, middleware `auth:sanctum`) untuk endpoint yang
+|    bertindak atas nama manusia, mis. mendaftarkan perangkat atau membuat
+|    penjualan. Izin FR-12 tetap diperiksa di use case.
+|
+| `auth/login` sendiri terbuka (kredensial = autentikasinya) tetapi dibatasi
+| lajunya untuk mencegah penebakan kata sandi (NFR-03).
+|
+| Endpoint webhook pembayaran berada DI LUAR kedua grup itu: pemanggilnya
+| adalah penyedia pembayaran, yang membuktikan identitasnya dengan tanda
+| tangan (plan §14/§15), bukan token.
 |
 */
 
 Route::prefix('v1')->group(function () {
+    Route::post('auth/login', LoginController::class)
+        ->middleware('throttle:'.max(1, (int) config('pos.api.login_attempts_per_minute', 10)).',1')
+        ->name('api.v1.auth.login');
+
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('devices/register', DeviceRegisterController::class)
+            ->name('api.v1.devices.register');
+    });
+
     Route::middleware('device')->group(function () {
         Route::post('sync/push', SyncPushController::class)->name('api.v1.sync.push');
         Route::get('sync/pull', SyncPullController::class)->name('api.v1.sync.pull');

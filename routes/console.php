@@ -14,3 +14,8 @@ Schedule::command('pos:alerts:generate')->hourly()->withoutOverlapping();
 // Plan §14 "Rekonsiliasi": selaraskan status charge yang belum final dengan
 // penyedia. Tanpa gateway/charge, perintah ini no-op dan murah.
 Schedule::command('pos:reconcile')->hourly()->withoutOverlapping();
+
+// §15/NFR-03: buang token API (Sanctum) yang sudah kedaluwarsa agar tabel
+// `personal_access_tokens` tidak tumbuh tanpa batas. Token perangkat tidak
+// terpengaruh (masa berlakunya dikendalikan `devices.revoked_at`).
+Schedule::command('sanctum:prune-expired --hours=24')->daily()->withoutOverlapping();

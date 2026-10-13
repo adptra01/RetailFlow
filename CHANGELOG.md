@@ -1,3 +1,47 @@
+# Rebuild POS Universal — Fase 5: Fondasi API Klien Perangkat — Sanctum, Login, & Pendaftaran Perangkat (§18, Increment 52) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§18 "Endpoint inti": `POST /api/v1/auth/login`, `POST /api/v1/devices/register`; §15 "Autentikasi server menggunakan mekanisme yang didukung Laravel", "Perangkat memiliki ID dan token unik", "Perangkat yang dicabut harus ditolak"; §12 "Jangan mengandalkan `tenant_id` dari request pengguna tanpa memverifikasinya"; NFR-03 keamanan; FR-12 izin).
+
+## Latar
+Fase 4 hanya menyediakan endpoint sinkronisasi (`sync/push`, `sync/pull`) yang diautentikasi **token perangkat**. Daftar endpoint §18 yang lain (`auth/login`, `devices/register`, `sales`, `products`, laporan, pembayaran piutang) belum ada, dan belum ada satu pun mekanisme yang mengautentikasi **manusia** di API — sehingga perangkat tidak punya cara resmi memperoleh identitasnya sendiri. Increment ini memasang fondasinya: token pengguna (Sanctum) untuk identitas manusia, token perangkat (tabel `devices`, sudah ada) tetap untuk sinkronisasi.
+
+## Keputusan desain
+- **Sanctum (`laravel/sanctum` ^4.3, paket first-party Laravel)** — sesuai §15; mendukung Laravel 13 (`illuminate/* ^13.0`). Dependensi dipasang lokal di proyek (bukan global); `composer.json`/`composer.lock`/`config/auth.php` dicadangkan lebih dulu ke `Backups/projects/retailflow-*.pre-sanctum-20261013`.
+- **Dua identitas, dua endpoint, satu arah**: `auth/login` mengembalikan token **pengguna** (ability = izin FR-12 pengguna itu); `devices/register` (memakai token pengguna + izin `user.manage`) mengembalikan token **perangkat** yang dipakai sinkronisasi. Token pengguna TIDAK berlaku sebagai token perangkat dan sebaliknya — diuji.
+- **Tenant selalu dari identitas, tidak dari body** (§12): login mengambil tenant dari pengguna, pendaftaran perangkat mengambil tenant dari pengguna terautentikasi, lokasi wajib milik tenant itu.
+- **Masa berlaku token** dikonfigurasi (`pos.api.token_days`, default 30 hari; `0` = tanpa kedaluwarsa) — token bocor tidak berlaku selamanya; token kedaluwarsa dibuang penjadwal harian `sanctum:prune-expired`.
+- **Urutan pemeriksaan login**: kredensial diperiksa lebih dulu, baru status akun, sehingga status akun hanya terungkap kepada pemegang kredensial yang sah.
+
+## Perubahan
+
+### Dependensi & skema
+- **`composer.json`** — tambah `laravel/sanctum` ^4.3.
+- **`database/migrations/2026_10_13_213726_create_personal_access_tokens_table.php`** — migrasi resmi Sanctum (dipublikasikan agar terlihat & ikut ditinjau; sebelumnya package tidak memuat migrasinya sendiri).
+- **`app/Models/User.php`** — trait `HasApiTokens`.
+- **`config/pos.php`** — bagian `pos.api`: `token_days` (env `POS_API_TOKEN_DAYS`, default 30) dan `login_attempts_per_minute` (env `POS_API_LOGIN_ATTEMPTS`, default 10).
+
+### Domain & API
+- **`Actions\Auth\IssueApiToken`** — menukar kredensial dengan token API: pencarian pengguna lintas tenant (`withoutGlobalScope('tenant')`, email unik global) agar hasil login tak bergantung konteks permintaan; `Hash::check` dulu lalu tolak akun nonaktif/tanpa toko; ability token = izin FR-12 pengguna; **login ulang pada nama perangkat yang sama mencabut token lama perangkat itu** (sesi tidak menumpuk); audit `api.login` (tanpa secret).
+- **`Exceptions\Auth\LoginRejected`** — kredensial salah 422, akun nonaktif / tanpa toko 403.
+- **`Support\Auth\ApiSession`** — hasil login (pengguna, tenant, token plaintext sekali, kedaluwarsa, ability, peran).
+- **`Http\Controllers\Api\V1\LoginController`** — `POST /api/v1/auth/login` (dibatasi laju `throttle:pos.api.login_attempts_per_minute,1`) mengembalikan token, kedaluwarsa, pengguna, tenant (profil fitur/currency/timezone), peran, izin, waktu server.
+- **`Http\Controllers\Api\V1\DeviceRegisterController`** — `POST /api/v1/devices/register` (middleware `auth:sanctum`) memakai use case `RegisterDevice` yang sudah ada (izin `user.manage`, token perangkat plaintext sekali, audit `device.registered`).
+- **`Http\Requests\Api\V1\{LoginRequest,RegisterDeviceRequest}`** — validasi + pesan Indonesia; `location_id` dibatasi `exists:locations,id,tenant_id=pengguna` sehingga lokasi tenant lain ditolak sebelum menyentuh domain.
+- **`routes/api.php`** — grup `auth:sanctum` untuk endpoint yang bertindak atas nama manusia; grup `device` tetap untuk sinkronisasi; dokumentasi dua identitas di header file.
+- **`routes/console.php`** — penjadwal harian `sanctum:prune-expired --hours=24`.
+
+### Pengujian
+- **`tests/Feature/Api/ApiLoginTest.php`** (9) — token + ability izin + audit + hanya hash yang tersimpan + kedaluwarsa ±30 hari; kredensial salah (email tak dikenal dijawab pesan sama, tanpa token/audit); akun nonaktif 403; pengguna tanpa toko 403; `device_name`/`platform` wajib; pembatasan laju (429 setelah batas); login ulang nama perangkat sama mencabut token lama (token lama 401, token baru 201); `token_days=0` → tanpa kedaluwarsa; token pengguna ditolak di endpoint sinkronisasi (401).
+- **`tests/Feature/Api/DeviceRegisterApiTest.php`** (7) — pendaftaran sukses + token perangkat langsung bisa dipakai `sync/pull` + audit; lokasi milik tenant sendiri diterima; lokasi tenant lain 422; peran tanpa `user.manage` (kasir) 403; tanpa token 401; pengguna nonaktif 403; token pengguna yang sudah dicabut 401.
+
+## Status suite
+- **849 passed / 0 failed / 4 skipped** (2962 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 17 file, 2 perbaikan gaya.
+- Endpoint §18 yang belum ada: `GET /api/v1/bootstrap`, `GET /api/v1/products`, `POST /api/v1/sales`, `GET /api/v1/sales/{id}`, `POST /api/v1/sales/{id}/void`, `POST /api/v1/receivables/{id}/payments`, `GET /api/v1/reports/sales`.
+- Utang lain: adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, dan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`).
+
+---
+
 # Rebuild POS Universal — Fase 5: Catatan Penagihan Piutang (FR-07, Increment 51) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

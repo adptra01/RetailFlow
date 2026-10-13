@@ -79,8 +79,10 @@ enum AuditAction: string
 
     // Identitas perangkat (Sprint 4, NFR-03, §15).
     case DeviceRegistered = 'device.registered';
-
     case DeviceRevoked = 'device.revoked';
+
+    // Login klien perangkat lewat API (§18 `POST /api/v1/auth/login`).
+    case ApiLoggedIn = 'api.login';
 
     // Pembelian — CreatePurchaseOrder.
     case PurchaseOrderCreated = 'purchase_order.created';
