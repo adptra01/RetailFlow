@@ -2,6 +2,8 @@
 
 namespace App\Exceptions\Payments;
 
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use RuntimeException;
 
 /**
@@ -18,5 +20,15 @@ final class QrisNotConfigured extends RuntimeException
         $suffix = $tenantId === null ? '' : " (tenant {$tenantId})";
 
         return new self('QRIS belum dikonfigurasi untuk toko ini'.$suffix.'. Minta pemilik mengunggah QRIS di Pengaturan Pembayaran.');
+    }
+
+    /**
+     * Ini kesalahan PEMANGGIL (permintaan checkout memakai metode QRIS yang
+     * belum disiapkan), bukan kegagalan server — jawab 422 seperti penolakan
+     * domain penjualan lainnya (§18 "Informasi error validasi bila gagal").
+     */
+    public function render(Request $request): JsonResponse
+    {
+        return response()->json(['message' => $this->getMessage()], 422);
     }
 }

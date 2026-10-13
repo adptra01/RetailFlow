@@ -127,8 +127,13 @@ class CreateSale
     {
         $clientRequestId = $data['client_request_id'] ?? null;
 
+        // §12: kunci idempotensi dicari DI DALAM tenant pemanggil. Tanpa
+        // pembatasan ini, `client_request_id` milik tenant lain bisa
+        // mengembalikan penjualan tenant lain (kebocoran lintas tenant).
+        $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
         if (is_string($clientRequestId) && $clientRequestId !== '') {
-            $existing = $this->findByIdempotencyKey($clientRequestId);
+            $existing = $this->findByIdempotencyKey($clientRequestId, $tenantId);
 
             if ($existing) {
                 return $existing;
@@ -139,9 +144,9 @@ class CreateSale
             return DB::transaction(fn () => $this->persist($data, $clientRequestId));
         } catch (QueryException $e) {
             // Concurrent duplicate submission: the unique constraint fires,
-            // so the winner's sale is returned.
+            // so the winner's sale is returned — tetap hanya bila satu tenant.
             if ($this->isIdempotencyViolation($e) && is_string($clientRequestId) && $clientRequestId !== '') {
-                return $this->findByIdempotencyKey($clientRequestId) ?? throw $e;
+                return $this->findByIdempotencyKey($clientRequestId, $tenantId) ?? throw $e;
             }
 
             throw $e;
@@ -908,11 +913,12 @@ class CreateSale
         return $number;
     }
 
-    private function findByIdempotencyKey(string $clientRequestId): ?Transaction
+    private function findByIdempotencyKey(string $clientRequestId, ?string $tenantId = null): ?Transaction
     {
         return Transaction::query()
             ->withoutGlobalScopes()
             ->where('client_request_id', $clientRequestId)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
             ->first();
     }
 

@@ -1,3 +1,46 @@
+# Rebuild POS Universal — Fase 5: Endpoint Tulis API — Checkout, Rincian, & Void Penjualan (§18, Increment 54) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§18 daftar endpoint: `POST /api/v1/sales`, `GET /api/v1/sales/{id}`, `POST /api/v1/sales/{id}/void` + "Contoh kontrak checkout" baris ~1181; §12 isolasi tenant; §17.1 harga integer minor unit; §17.4 void tidak menghapus & alasan wajib; §11.1 idempotensi; FR-05 metode pembayaran; FR-07 piutang; FR-12 izin; FR-13 modul).
+
+## Latar
+Setelah Increment 53 klien sudah bisa membaca (bootstrap + katalog) tetapi belum bisa MENULIS apa pun: kasir tidak dapat menyelesaikan transaksi, mengambil rinciannya, atau membatalkannya. Increment ini membuka jalur tulis §18 dan sekaligus menutup satu cacat isolasi tenant pada idempotensi penjualan yang ditemukan saat mengerjakannya.
+
+## Keputusan desain
+- **Harga TIDAK PERNAH dipercaya dari klien** (§18 "Nilai harga yang dikirim client tidak boleh dipercaya sebagai sumber final"): kontrak permintaan hanya memuat `items[].product_id` + `quantity`; `SaleCheckoutMapper` mengambil harga dari master (harga satuan bila `product_unit_id` dikirim, jika tidak harga satuan dasar) DI DALAM transaksi basis data yang sama dengan penulisannya. Medan `unit_price_minor` yang disisipkan klien diabaikan (diuji).
+- **Kebijakan toko bukan permintaan perangkat**: `allow_negative_stock` tidak diterima dari klien (kebijakan `pos.inventory.allow_negative_stock`, §11.4); status verifikasi pembayaran juga tidak dapat diklaim klien (FR-05).
+- **Idempotensi berlapis** (§11.1): `client_request_id` wajib; `uuid` opsional (identitas sinkronisasi perangkat). Balasan ulang mengembalikan penjualan yang sama dengan `sync.status = already_applied` dan `sync.idempotent_replay = true`, tanpa menulis stok/mutasi/audit kedua.
+- **Cacat isolasi tenant diperbaiki** (ditemukan saat menulis endpoint ini): `CreateSale` mencari `client_request_id` **tanpa batas tenant** (`withoutGlobalScopes()`), sehingga kunci milik tenant lain dapat mengembalikan penjualan tenant lain. Pencarian kini dibatasi `tenant_id`; migrasi `2026_10_13_214500_*` mengganti indeks unik global `client_request_id` dengan unik gabungan `(tenant_id, client_request_id)` (hanya indeks — tidak ada kolom/baris yang diubah).
+- **`uuid` unik global**: bila perangkat mengirim uuid yang sudah dimiliki tenant lain, permintaan dijawab **409** — bukan 500 dan bukan data tenant lain (§12).
+- **Otorisasi FR-12**: `access.module` selalu; `discount.apply` bila ada diskon (baris atau transaksi) sehingga kasir tanpa izin tidak bisa memotong harga; `transaction.void` diperiksa `VoidSale` atas nama pengguna token.
+- **Modul kasir & sisi server**: modul `cashier` nonaktif → 403 (FR-13); `enqueue_for_sync` dimatikan karena penjualan sudah lahir di server (§11.1).
+- **`GET /api/v1/sales/{id}`** menerima UUID sinkronisasi atau id numerik, selalu dibatasi tenant; penjualan tenant lain dijawab 404 yang sama dengan penjualan tidak ada (tidak membocorkan keberadaan).
+
+## Perubahan
+- **`app/Support/Api/SaleCheckoutMapper.php`** — kontrak §18 → data `CreateSale`: resolusi harga server (produk wajib aktif, satuan wajib milik produk itu), pemetaan `discount {type, value}` (nominal dalam minor unit / persen), `payments[].method` → tender, jalur `paid_minor` untuk kredit tanpa uang muka.
+- **`app/Support/Api/SalePayload.php`** — bentuk kiriman penjualan (id, uuid, nomor struk, status, total minor, kembalian, sisa, item, tender, piutang, label Indonesia).
+- **`app/Support/Api/SaleLocator.php`** — pencarian penjualan satu tenant (UUID atau id) + pencarian lintas tenant khusus pemeriksaan bentrokan uuid.
+- **`app/Http/Requests/Api/V1/StoreSaleRequest.php`** — validasi kontrak checkout; `device_id`/`location_id`/`customer_id` wajib milik tenant dan perangkat belum dicabut; pesan bahasa Indonesia per medan.
+- **`app/Http/Requests/Api/V1/VoidSaleRequest.php`** — alasan void wajib (3–500 karakter), `restore_stock` opsional.
+- **`app/Http/Controllers/Api/V1/StoreSaleController.php`** — `POST /api/v1/sales` (201 dibuat, 200 balasan ulang, 409 uuid bentrok).
+- **`app/Http/Controllers/Api/V1/ShowSaleController.php`** — `GET /api/v1/sales/{sale}`.
+- **`app/Http/Controllers/Api/V1/VoidSaleController.php`** — `POST /api/v1/sales/{sale}/void`.
+- **`app/Actions/Sales/CreateSale.php`** — idempotensi dibatasi tenant (§12).
+- **`app/Exceptions/Payments/QrisNotConfigured.php`** — `render()` 422 (QRIS belum diunggah = kesalahan pemanggil, bukan kegagalan server); jalur web sudah menangkapnya lebih dulu sehingga tidak berubah.
+- **`database/migrations/2026_10_13_214500_scope_sale_idempotency_key_to_tenant.php`** — unik idempotensi per tenant.
+- **`routes/api.php`** — tiga endpoint penjualan di grup `auth:sanctum` + `user.tenant`.
+
+## Pengujian
+- **`tests/Feature/Api/SaleApiTest.php`** (20) — penjualan tunai dengan harga server & minor unit (stok, item, tender); harga kiriman klien diabaikan; balasan ulang `client_request_id` tidak menggandakan (stok tetap, satu transaksi); uuid perangkat dihormati & di-*replay*; uuid milik tenant lain → 409 tanpa penulisan; kunci idempotensi yang sama di tenant lain tetap membuat penjualan MILIK tenant itu (bukti perbaikan isolasi) dan silang-baca ditolak; penjualan kredit membuat piutang dengan jatuh tempo (`due_days`); kredit wajib pelanggan tenant sendiri; produk nonaktif/tenant lain ditolak; stok tidak cukup → pesan domain; diskon butuh izin `discount.apply`; diskon memotong total; pelanggaran kontrak dilaporkan per medan; QRIS belum dikonfigurasi → 422; rincian via UUID & id, yang tidak ada → 404; void mengembalikan stok SEKALI & idempoten; void butuh izin `transaction.void` + alasan; void atas penjualan tenant lain → 404; modul kasir nonaktif → 403; tanpa token → 401 dan **token perangkat ditolak** di endpoint pengguna (§15).
+- Catatan tes: guard auth dan `TenantContext` adalah `singleton` sehingga antar-permintaan di dalam satu tes harus direset (`freshRequestState()`) agar tidak meniru kebocoran identitas yang tidak terjadi pada permintaan sungguhan.
+
+## Status suite
+- **883 passed / 0 failed / 4 skipped** (3168 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 29 file, 1 perbaikan gaya.
+- Endpoint §18 yang belum ada: `POST /api/v1/receivables/{id}/payments`, `GET /api/v1/reports/sales`.
+- Utang lain: adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, minor-unit data demo.
+
+---
+
 # Rebuild POS Universal — Fase 5: Endpoint Baca API — Bootstrap & Katalog Produk (§18, Increment 53) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026
