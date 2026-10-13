@@ -1,6 +1,9 @@
 <?php
 
 use App\Actions\Receivables\RecordReceivablePayment;
+use App\Actions\Receivables\ReverseReceivablePayment;
+use App\Enums\Permission;
+use App\Exceptions\Receivables\PaymentReversalNotAllowed;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\ReceivableClosed;
 use App\Models\Customer;
@@ -30,6 +33,9 @@ state([
     'paymentMethod' => 'cash',
     'paymentNote' => '',
     'clientRequestId' => null,
+    'showReversalModal' => false,
+    'reversalPaymentId' => null,
+    'reversalReason' => '',
 ]);
 
 // Folio mengikat segmen [Customer] menjadi model Customer dan meneruskannya
@@ -85,6 +91,14 @@ $selectedReceivable = computed(function () {
     return Receivable::with('transaction')->find($this->selectedReceivableId);
 });
 
+$selectedReversalPayment = computed(function () {
+    if (! $this->reversalPaymentId) {
+        return null;
+    }
+
+    return ReceivablePayment::with('receivable.transaction')->find($this->reversalPaymentId);
+});
+
 $openPaymentModal = function ($receivableId) {
     $receivable = Receivable::findOrFail($receivableId);
 
@@ -138,6 +152,60 @@ $recordPayment = function () {
     $this->reset(['selectedReceivableId', 'paymentAmount', 'paymentMethod', 'paymentNote', 'clientRequestId']);
     $this->paymentMethod = 'cash';
     Flux::toast(variant: 'success', text: __('Payment recorded successfully.'));
+};
+
+/** Buka modal koreksi untuk satu pembayaran piutang (FR-07). */
+$openReversalModal = function (int $paymentId) {
+    $payment = ReceivablePayment::with('receivable')->findOrFail($paymentId);
+
+    abort_unless($payment->receivable?->customer_id === $this->customer->id, 404);
+
+    // Pembayaran yang sudah dikoreksi tidak perlu dikoreksi lagi.
+    if ($payment->isReversed()) {
+        Flux::toast(variant: 'error', text: __('Pembayaran ini sudah dikoreksi.'));
+
+        return;
+    }
+
+    $this->reversalPaymentId = $payment->id;
+    $this->reversalReason = '';
+    $this->showReversalModal = true;
+};
+
+/** Koreksi pembayaran piutang lewat prosedur yang diaudit (FR-07). */
+$correctPayment = function () {
+    $this->validate([
+        'reversalPaymentId' => 'required|integer',
+        'reversalReason' => 'required|string|min:3|max:500',
+    ]);
+
+    $user = auth()->user();
+
+    if ($user === null || ! $user->can(Permission::CorrectReceivablePayment->value)) {
+        Flux::toast(variant: 'error', text: __('Anda tidak berizin mengoreksi pembayaran.'));
+
+        return;
+    }
+
+    $payment = ReceivablePayment::with('receivable')->findOrFail($this->reversalPaymentId);
+
+    abort_unless($payment->receivable?->customer_id === $this->customer->id, 404);
+
+    try {
+        app(ReverseReceivablePayment::class)->handle([
+            'payment_id' => $payment->id,
+            'user_id' => $user->id,
+            'reason' => $this->reversalReason,
+        ], $user);
+    } catch (PaymentReversalNotAllowed $e) {
+        Flux::toast(variant: 'error', text: $e->getMessage());
+
+        return;
+    }
+
+    $this->showReversalModal = false;
+    $this->reset(['reversalPaymentId', 'reversalReason']);
+    Flux::toast(variant: 'success', text: __('Pembayaran piutang dikoreksi.'));
 };
 
 ?>
@@ -271,22 +339,35 @@ $recordPayment = function () {
                                 <th class="p-3 font-medium text-right">{{ __('Amount') }}</th>
                                 <th class="p-3 font-medium">{{ __('Method') }}</th>
                                 <th class="p-3 font-medium">{{ __('Notes') }}</th>
+                                <th class="p-3 font-medium text-end">{{ __('Actions') }}</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-zinc-100 dark:divide-zinc-700">
                             @forelse ($this->paymentHistory as $payment)
-                                <tr>
+                                <tr class="{{ $payment->isReversed() ? 'opacity-60' : '' }}">
                                     <td class="p-3 text-zinc-600 dark:text-zinc-400">{{ $payment->created_at->format('d M Y') }}</td>
                                     <td class="p-3 font-medium">{{ $payment->receivable->transaction?->invoice_number ?? 'N/A' }}</td>
-                                    <td class="p-3 text-right font-mono text-green-600">
+                                    <td class="p-3 text-right font-mono {{ $payment->isReversed() ? 'text-zinc-400 line-through' : 'text-green-600' }}">
                                         {{ Number::currency($payment->amount_minor, 'IDR', 'id') }}
                                     </td>
                                     <td class="p-3 text-zinc-600 dark:text-zinc-400 text-xs">{{ $payment->payment_method }}</td>
                                     <td class="p-3 text-zinc-500 max-w-[200px] truncate">{{ $payment->notes ?: '—' }}</td>
+                                    <td class="p-3 text-end">
+                                        @if ($payment->isReversed())
+                                            <flux:badge color="rose" size="sm" inset="top bottom">{{ __('Dikoreksi') }}</flux:badge>
+                                        @else
+                                            @can('receivable.payment.correct')
+                                                <flux:button size="sm" variant="ghost" icon="arrow-uturn-left"
+                                                    wire:click="openReversalModal({{ $payment->id }})">
+                                                    {{ __('Koreksi') }}
+                                                </flux:button>
+                                            @endcan
+                                        @endif
+                                    </td>
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="5" class="p-6 text-center text-zinc-500">{{ __('No payment history.') }}</td>
+                                    <td colspan="6" class="p-6 text-center text-zinc-500">{{ __('No payment history.') }}</td>
                                 </tr>
                             @endforelse
                         </tbody>
@@ -334,6 +415,42 @@ $recordPayment = function () {
                     </div>
                 </div>
             </flux:modal>
+
+            {{-- Reversal Modal (FR-07: koreksi ber-audit) --}}
+            @can('receivable.payment.correct')
+            <flux:modal wire:model.self="showReversalModal" class="max-w-lg">
+                <div class="space-y-6">
+                    <div>
+                        <flux:heading size="lg">{{ __('Koreksi Pembayaran') }}</flux:heading>
+                        <flux:subheading>{{ __('Pembayaran akan ditandai dikoreksi dan sisa piutang dikembalikan. Jejak audit tetap tersimpan.') }}</flux:subheading>
+                    </div>
+
+                    @if ($this->selectedReversalPayment)
+                    <div class="rounded-lg border p-4 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-zinc-600 dark:text-zinc-400">{{ __('Amount:') }}</span>
+                            <strong>{{ Number::currency($this->selectedReversalPayment->amount_minor, 'IDR', 'id') }}</strong>
+                        </div>
+                        <div class="mt-1 flex justify-between">
+                            <span class="text-sm text-zinc-600 dark:text-zinc-400">{{ __('Invoice:') }}</span>
+                            <span>{{ $this->selectedReversalPayment->receivable?->transaction?->invoice_number ?? 'N/A' }}</span>
+                        </div>
+                    </div>
+                    @endif
+
+                    <flux:textarea wire:model="reversalReason" rows="3"
+                        label="{{ __('Alasan Koreksi') }}"
+                        placeholder="{{ __('Contoh: pembayaran tercatat ganda') }}" />
+
+                    <div class="flex justify-end gap-2">
+                        <flux:modal.close><flux:button variant="filled">{{ __('Cancel') }}</flux:button></flux:modal.close>
+                        <flux:button variant="danger" wire:click="correctPayment" :disabled="!$reversalReason">
+                            {{ __('Koreksi Pembayaran') }}
+                        </flux:button>
+                    </div>
+                </div>
+            </flux:modal>
+            @endcan
         </div>
     @endvolt
 </x-layouts::app>

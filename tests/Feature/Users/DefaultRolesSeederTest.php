@@ -25,7 +25,7 @@ class DefaultRolesSeederTest extends TestCase
     public function test_seeds_all_roles_and_permissions(): void
     {
         $this->assertSame(6, RoleRecord::count());
-        $this->assertSame(10, PermissionRecord::count());
+        $this->assertSame(11, PermissionRecord::count());
 
         foreach (Role::cases() as $role) {
             $this->assertNotNull(RoleRecord::findByName($role->value));
@@ -41,7 +41,7 @@ class DefaultRolesSeederTest extends TestCase
         $this->seed(DefaultRolesSeeder::class);
 
         $this->assertSame(6, RoleRecord::count());
-        $this->assertSame(10, PermissionRecord::count());
+        $this->assertSame(11, PermissionRecord::count());
     }
 
     public function test_each_role_gets_exact_matrix_permissions(): void

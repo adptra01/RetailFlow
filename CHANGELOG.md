@@ -1,3 +1,48 @@
+# Rebuild POS Universal — Fase 5: Koreksi Pembayaran Piutang Ber-Audit (FR-07, Increment 49) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (FR-07 "Pembatalan atau koreksi pembayaran melalui prosedur yang diaudit", "Setiap pembayaran piutang harus memiliki catatan tersendiri", "Saldo piutang tidak boleh diubah dengan mengedit angka secara langsung", "Koreksi harus dilakukan melalui transaksi koreksi yang memiliki alasan dan jejak audit"; FR-12 katalog izin; §17.4 "Retur dan void").
+
+## Latar
+FR-07 sudah punya piutang, pembayaran cicilan, sisa saldo, riwayat, dan daftar jatuh tempo. Satu kewajiban yang belum ada jalannya: **koreksi/pembatalan pembayaran lewat prosedur yang diaudit**. Tanpa itu, pembayaran piutang yang salah (ganda, salah pelanggan, salah nominal) tak bisa diperbaiki sama sekali — dan karena `VoidSale` menolak void selama piutang masih memiliki pembayaran, satu pembayaran keliru bisa mengunci penjualannya selamanya.
+
+## Perubahan
+
+### Skema & model
+- **Migrasi `2026_10_13_000003_add_reversal_fields_to_receivable_payments_table.php`** — aditif: `reversed_at`, `reversed_by`, `reversal_reason` (semua nullable) + indeks `reversed_at`.
+- **`Models\ReceivablePayment`** — kolom koreksi masuk `$fillable`, cast `reversed_at` datetime, relasi `reversedBy()`, scope **`active()`** (`whereNull('reversed_at')`), dan `isReversed()`. Docblock diperbarui: koreksi menandai baris, bukan menghapus/mengedit nominal.
+
+### Izin & audit
+- **`Enums\Permission`** — izin baru `receivable.payment.correct` ("Mengoreksi pembayaran piutang") + label. Karena `DefaultRolesSeeder` (kanonik FR-12) enum-driven, izin otomatis ter-seed; matriks `Enums\Role` memberi Admin dan Supervisor izin ini.
+- **`Enums\AuditAction`** — aksi `receivable.payment.corrected`.
+- **`Exceptions\Receivables\PaymentReversalNotAllowed`** — alasan wajib, pembayaran tidak ditemukan, piutang sudah void (HTTP 422 dengan pesan Indonesia).
+
+### Aksi domain
+- **`Actions\Receivables\ReverseReceivablePayment`** — satu-satunya jalur koreksi; jaminannya di satu tempat:
+  - **append-only**: baris tidak dihapus, hanya ditandai `reversed_at`/`reversed_by`/`reversal_reason`;
+  - **alasan wajib** dan **izin wajib** (bila aktor diberikan, `ActionAuthorizer` memeriksa `receivable.payment.correct`);
+  - **idempoten**: replay koreksi atas pembayaran yang sudah dikoreksi mengembalikan record apa adanya tanpa menambah saldo/audit kedua;
+  - **atomik & konsisten**: `remaining_minor` dikembalikan (dibatasi `original_amount_minor`), status piutang dibuka lagi (`closed → open`), cermin `customers.balance` disesuaikan — semua dalam satu transaksi (baris di-`lockForUpdate`);
+  - **fail-closed lintas-tenant**: pencarian pembayaran memakai `withoutGlobalScopes()` dengan filter `tenant_id` eksplisit;
+  - **jejak audit**: satu baris `receivable.payment.corrected` dengan aktor, perangkat, alasan, dan ringkasan perubahan (amount/remaining/status).
+
+### Integrasi
+- **`Actions\Sales\VoidSale`** — penjaga "piutang punya pembayaran" kini menghitung **hanya pembayaran aktif** (`payments()->active()->exists()`). Setelah pembayaran keliru dikoreksi, void penjualan bisa diselesaikan — menutup lingkaran FR-07 ↔ §17.4.
+
+### UI
+- **`resources/views/pages/customers/[Customer]/show.blade.php`** — riwayat pembayaran mendapat kolom **Aksi**: tombol **Koreksi** (gated `@can('receivable.payment.correct')`), badge **"Dikoreksi"** + nominal dicoret untuk baris yang sudah dikoreksi. Modal koreksi (juga digated izin) menampilkan ringkasan + field **alasan** wajib. Aksi server memvalidasi ulang izin (`$user->can(...)`) sehingga tak bergantung pada tampilan.
+
+### Pengujian
+- **`tests/Feature/Receivables/ReverseReceivablePaymentTest.php`** (9) — pemulihan saldo & pembukaan kembali piutang; append-only + audit; idempoten (satu pemulihan & satu audit); alasan wajib; pembayaran tak dikenal ditolak; izin ditegakkan (viewer ditolak, owner diizinkan); batas tenant; **void diizinkan setelah pembayaran dikoreksi**.
+- **`tests/Feature/Customers/ReverseReceivablePaymentUiTest.php`** (5) — owner melihat aksi, viewer tidak; koreksi lewat halaman mengembalikan saldo & menulis audit; alasan wajib; viewer tak bisa mengoreksi meski memanggil aksi.
+- **Katalog izin** disesuaikan: `RolePermissionCatalogTest` (11 izin), `DefaultRolesSeederTest` (11 izin) — matriks tetap diverifikasi otomatis terhadap `Enums\Role`.
+
+## Status suite
+- **806 passed / 0 failed / 4 skipped** (2816 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 13 file, bersih.
+- Utang yang masih terbuka: batas kredit & peringatan pelanggan serta jatuh tempo/catatan penagihan FR-07, adaptor payment gateway/QRIS (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, dan pemeriksaan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`).
+
+---
+
 # Rebuild POS Universal — Fase 5: Kategori Alert Lokal Lengkap (§11.5, FR-10, Increment 48) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

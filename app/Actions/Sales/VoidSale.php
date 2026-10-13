@@ -262,7 +262,9 @@ class VoidSale
 
         // FR-07: pembayaran piutang bersifat append-only. Void tidak boleh
         // menyembunyikannya — koreksi piutang harus diselesaikan lebih dahulu.
-        if ($receivable->payments()->exists()) {
+        // Pembayaran yang SUDAH dikoreksi (reversed) tidak dihitung lagi:
+        // koreksinya sudah diselesaikan lewat `ReverseReceivablePayment`.
+        if ($receivable->payments()->active()->exists()) {
             throw VoidNotAllowed::receivableHasPayments($transaction->invoice_number);
         }
 

@@ -26,6 +26,10 @@ enum Permission: string
     // Melakukan retur penjualan (FR-08, §17.4).
     case ReturnTransaction = 'transaction.return';
 
+    // Mengoreksi/membatalkan pembayaran piutang (FR-07: koreksi lewat
+    // prosedur yang diaudit).
+    case CorrectReceivablePayment = 'receivable.payment.correct';
+
     // Mengubah stok.
     case AdjustStock = 'stock.adjust';
 
@@ -50,6 +54,7 @@ enum Permission: string
             self::ApplyDiscount => 'Memberi diskon',
             self::VoidTransaction => 'Membatalkan transaksi',
             self::ReturnTransaction => 'Melakukan retur penjualan',
+            self::CorrectReceivablePayment => 'Mengoreksi pembayaran piutang',
             self::AdjustStock => 'Mengubah stok',
             self::ViewFinancialReports => 'Melihat laporan keuangan',
             self::ManageUsers => 'Mengelola pengguna',
