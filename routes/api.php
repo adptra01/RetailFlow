@@ -1,8 +1,10 @@
 <?php
 
+use App\Http\Controllers\Api\V1\BootstrapController;
 use App\Http\Controllers\Api\V1\DeviceRegisterController;
 use App\Http\Controllers\Api\V1\LoginController;
 use App\Http\Controllers\Api\V1\PaymentWebhookController;
+use App\Http\Controllers\Api\V1\ProductIndexController;
 use App\Http\Controllers\Api\V1\SyncPullController;
 use App\Http\Controllers\Api\V1\SyncPushController;
 use Illuminate\Support\Facades\Route;
@@ -34,9 +36,15 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:'.max(1, (int) config('pos.api.login_attempts_per_minute', 10)).',1')
         ->name('api.v1.auth.login');
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'user.tenant'])->group(function () {
         Route::post('devices/register', DeviceRegisterController::class)
             ->name('api.v1.devices.register');
+
+        Route::get('bootstrap', BootstrapController::class)
+            ->name('api.v1.bootstrap');
+
+        Route::get('products', ProductIndexController::class)
+            ->name('api.v1.products.index');
     });
 
     Route::middleware('device')->group(function () {

@@ -1,3 +1,38 @@
+# Rebuild POS Universal — Fase 5: Endpoint Baca API — Bootstrap & Katalog Produk (§18, Increment 53) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§18 daftar endpoint: `GET /api/v1/bootstrap`, `GET /api/v1/products`; §12 isolasi tenant; §17.1 harga integer minor unit; FR-13 profil fitur; FR-05 metode pembayaran; FR-12 izin `access.module`).
+
+## Latar
+Setelah Increment 52 klien perangkat sudah bisa login dan mendaftarkan diri, tetapi belum ada satu pun endpoint baca: klien tidak tahu toko mana yang dilayaninya, modul apa yang aktif, kebijakan apa yang berlaku, dan tidak bisa mengambil katalog produk. Increment ini menutup celah itu.
+
+## Keputusan desain
+- **Endpoint baca memakai token PENGGUNA + izin FR-12 `access.module`** (semua peran punya izin ini), bukan token perangkat. Sinkronisasi tetap jalur token perangkat; pemisahan ini diuji sejak Increment 52.
+- **Tenant dari pengguna, tidak pernah dari permintaan** (§12): middleware baru `BindUserTenant` mengikat `TenantContext` dari `$request->user()->tenant_id` setelah `auth:sanctum`. Tanpa ikatan ini, scope tenant global tidak aktif dan query produk bisa membaca data tenant lain — celah yang ditutup dan **diuji langsung** (produk tenant tetangga tidak muncul).
+- **Modul nonaktif = 403, bukan data kosong** (FR-13): katalog produk menolak dengan pesan jelas bila modul `products` dimatikan untuk toko itu.
+- **Harga selalu dari server sebagai integer minor unit** (§17.1/§18), dan `buy_price`/`purchase_price` TIDAK dikirim — informasi margin bukan kebutuhan kasir.
+- **`GET /api/v1/products` mendukung penyegaran inkremental** (`updated_since`) agar klien offline tidak mengunduh seluruh katalog berulang kali; paginasi dibatasi 200/halaman.
+
+## Perubahan
+- **`app/Http/Middleware/BindUserTenant.php`** (alias `user.tenant`) — mengikat tenant pengguna terautentikasi ke `TenantContext` (§12).
+- **`bootstrap/app.php`** — daftarkan alias middleware.
+- **`app/Support/Api/ApiMeta.php`** — amplop respons seragam: `server_time`, `currency` (kode + minor exponent), `version` (app & schema) — klien dapat mendeteksi jam perangkat yang melenceng dan menerjemahkan minor unit tanpa menebak.
+- **`app/Support/Api/ProductPayload.php`** — pemetaan produk → JSON API (harga `price_minor`, unit dasar, kategori/merek ringkas, `version`, `updated_at`; daftar unit penuh bila diminta).
+- **`app/Http/Controllers/Api/V1/BootstrapController.php`** — `GET /api/v1/bootstrap`: identitas tenant (profil fitur, kompleksitas UI, currency, timezone, onboarding) + pengguna (peran & izin), `modules` efektif (FR-13), `payment_methods` yang boleh dipilih (`mixed` dikecualikan, FR-05), lokasi aktif tenant (§12, dipakai saat mendaftarkan perangkat), dan `policies` (piutang FR-07, stok negatif §11.4, kebijakan stok void/retur §17.4, batas batch sinkronisasi §11).
+- **`app/Http/Controllers/Api/V1/ProductIndexController.php`** + **`app/Http/Requests/Api/V1/ProductIndexRequest.php`** — `GET /api/v1/products`: filter `search` (nama/SKU/barcode, wildcard di-escape), `category_id`, `updated_since`, `include_inactive`, `include_units`, `sort`/`direction` (whitelist), `per_page` (maks 200) + meta paginasi.
+- **`routes/api.php`** — grup `auth:sanctum` + `user.tenant` kini memuat `bootstrap` dan `products`.
+
+## Pengujian
+- **`tests/Feature/Api/BootstrapApiTest.php`** (6) — isi bootstrap (tenant, pengguna, izin, `currency.minor_exponent`, kebijakan mengikuti konfigurasi, `mixed` tidak ada di pilihan metode); hanya lokasi AKTIF milik tenant sendiri yang dikirim (lokasi nonaktif & tenant tetangga tidak muncul); `enabled_modules` eksplisit menimpa profil; 401 tanpa token; 403 tanpa izin `access.module`; 403 pengguna tanpa toko.
+- **`tests/Feature/Api/ProductIndexApiTest.php`** (8) — hanya produk tenant pengguna yang muncul (produk tenant lain tidak bocor) + harga minor unit + unit dasar + meta; produk nonaktif tersembunyi kecuali `include_inactive`; pencarian nama/SKU/barcode; `updated_since` untuk penyegaran inkremental; paginasi & batas `per_page` (422 bila berlebih); `include_units` mengembalikan seluruh satuan; modul produk nonaktif → 403; 401 tanpa token.
+
+## Status suite
+- **863 passed / 0 failed / 4 skipped** (3022 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 12 file, tanpa perbaikan gaya.
+- Endpoint §18 yang belum ada: `POST /api/v1/sales`, `GET /api/v1/sales/{id}`, `POST /api/v1/sales/{id}/void`, `POST /api/v1/receivables/{id}/payments`, `GET /api/v1/reports/sales`.
+- Utang lain: adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, minor-unit data demo.
+
+---
+
 # Rebuild POS Universal — Fase 5: Fondasi API Klien Perangkat — Sanctum, Login, & Pendaftaran Perangkat (§18, Increment 52) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026
