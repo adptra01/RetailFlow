@@ -5,6 +5,8 @@ use App\Http\Controllers\Api\V1\DeviceRegisterController;
 use App\Http\Controllers\Api\V1\LoginController;
 use App\Http\Controllers\Api\V1\PaymentWebhookController;
 use App\Http\Controllers\Api\V1\ProductIndexController;
+use App\Http\Controllers\Api\V1\ReceivablePaymentController;
+use App\Http\Controllers\Api\V1\SalesReportController;
 use App\Http\Controllers\Api\V1\ShowSaleController;
 use App\Http\Controllers\Api\V1\StoreSaleController;
 use App\Http\Controllers\Api\V1\SyncPullController;
@@ -58,6 +60,13 @@ Route::prefix('v1')->group(function () {
 
         Route::post('sales/{sale}/void', VoidSaleController::class)
             ->name('api.v1.sales.void');
+
+        // `{receivable}` menerima UUID sinkronisasi atau id numerik server.
+        Route::post('receivables/{receivable}/payments', ReceivablePaymentController::class)
+            ->name('api.v1.receivables.payments.store');
+
+        Route::get('reports/sales', SalesReportController::class)
+            ->name('api.v1.reports.sales');
     });
 
     Route::middleware('device')->group(function () {

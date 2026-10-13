@@ -48,8 +48,14 @@ class RecordReceivablePayment
     {
         $clientRequestId = $data['client_request_id'] ?? null;
 
+        // §12: kunci idempotensi dicari DI DALAM tenant pemanggil. Tanpa
+        // pembatasan ini, kunci milik tenant lain dapat mengembalikan
+        // pembayaran piutang tenant lain — sekaligus menolak pembayaran sah
+        // kita sendiri.
+        $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
         if (is_string($clientRequestId) && $clientRequestId !== '') {
-            $existing = $this->findByIdempotencyKey($clientRequestId);
+            $existing = $this->findByIdempotencyKey($clientRequestId, $tenantId);
 
             if ($existing) {
                 return $existing;
@@ -60,7 +66,7 @@ class RecordReceivablePayment
             return DB::transaction(fn () => $this->persist($data, $clientRequestId));
         } catch (QueryException $e) {
             if ($this->isIdempotencyViolation($e) && is_string($clientRequestId) && $clientRequestId !== '') {
-                return $this->findByIdempotencyKey($clientRequestId) ?? throw $e;
+                return $this->findByIdempotencyKey($clientRequestId, $tenantId) ?? throw $e;
             }
 
             throw $e;
@@ -146,11 +152,12 @@ class RecordReceivablePayment
         return $payment;
     }
 
-    private function findByIdempotencyKey(string $clientRequestId): ?ReceivablePayment
+    private function findByIdempotencyKey(string $clientRequestId, ?string $tenantId = null): ?ReceivablePayment
     {
         return ReceivablePayment::query()
             ->withoutGlobalScopes()
             ->where('client_request_id', $clientRequestId)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
             ->first();
     }
 

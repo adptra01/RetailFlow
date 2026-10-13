@@ -46,8 +46,11 @@ class RecordSupplierPayment
     {
         $clientRequestId = $data['client_request_id'] ?? null;
 
+        // §12: kunci idempotensi dibatasi tenant pemanggil.
+        $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
         if (is_string($clientRequestId) && $clientRequestId !== '') {
-            $existing = $this->findByIdempotencyKey($clientRequestId);
+            $existing = $this->findByIdempotencyKey($clientRequestId, $tenantId);
             if ($existing) {
                 return $existing;
             }
@@ -57,7 +60,7 @@ class RecordSupplierPayment
             return DB::transaction(fn () => $this->persist($data, $clientRequestId));
         } catch (QueryException $e) {
             if ($this->isIdempotencyViolation($e) && is_string($clientRequestId) && $clientRequestId !== '') {
-                return $this->findByIdempotencyKey($clientRequestId) ?? throw $e;
+                return $this->findByIdempotencyKey($clientRequestId, $tenantId) ?? throw $e;
             }
             throw $e;
         }
@@ -167,11 +170,12 @@ class RecordSupplierPayment
         );
     }
 
-    private function findByIdempotencyKey(string $clientRequestId): ?SupplierPayment
+    private function findByIdempotencyKey(string $clientRequestId, ?string $tenantId = null): ?SupplierPayment
     {
         return SupplierPayment::query()
             ->withoutGlobalScopes()
             ->where('client_request_id', $clientRequestId)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
             ->first();
     }
 

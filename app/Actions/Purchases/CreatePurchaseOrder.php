@@ -47,8 +47,12 @@ class CreatePurchaseOrder
     {
         $clientRequestId = $data['client_request_id'] ?? null;
 
+        // §12: kunci idempotensi dicari DI DALAM tenant pemanggil, supaya kunci
+        // milik tenant lain tidak mengembalikan pesanan pembelian tenant lain.
+        $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
         if (is_string($clientRequestId) && $clientRequestId !== '') {
-            $existing = $this->findByIdempotencyKey($clientRequestId);
+            $existing = $this->findByIdempotencyKey($clientRequestId, $tenantId);
             if ($existing) {
                 return $existing;
             }
@@ -58,7 +62,7 @@ class CreatePurchaseOrder
             return DB::transaction(fn () => $this->persist($data, $clientRequestId));
         } catch (QueryException $e) {
             if ($this->isIdempotencyViolation($e) && is_string($clientRequestId) && $clientRequestId !== '') {
-                return $this->findByIdempotencyKey($clientRequestId) ?? throw $e;
+                return $this->findByIdempotencyKey($clientRequestId, $tenantId) ?? throw $e;
             }
             throw $e;
         }
@@ -233,11 +237,12 @@ class CreatePurchaseOrder
         return $subtotal;
     }
 
-    private function findByIdempotencyKey(string $clientRequestId): ?PurchaseOrder
+    private function findByIdempotencyKey(string $clientRequestId, ?string $tenantId = null): ?PurchaseOrder
     {
         return PurchaseOrder::query()
             ->withoutGlobalScopes()
             ->where('client_request_id', $clientRequestId)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
             ->first();
     }
 

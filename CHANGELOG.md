@@ -1,3 +1,44 @@
+# Rebuild POS Universal — Fase 5: Endpoint Sisa API §18 — Pembayaran Piutang & Laporan Penjualan + Pengetatan Idempotensi (Increment 55) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§18 daftar endpoint: `POST /api/v1/receivables/{id}/payments`, `GET /api/v1/reports/sales`; §12 isolasi tenant; §17.1 nominal integer minor unit; §11.1 idempotensi `client_request_id`; FR-07 piutang & catatan pembayaran; FR-09 definisi laporan penjualan & §17.4 void; FR-12 izin/audit; FR-13 modul; §15 token perangkat ≠ token pengguna).
+
+## Latar
+Increment 52–54 membuka login, katalog, dan seluruh jalur penjualan. Dua endpoint §18 masih hilang: penagihan piutang dari klien perangkat (FR-07) dan laporan penjualan (FR-09). Saat menulisnya, pola cacat yang sama seperti Increment 54 ditemukan di lima aksi domain lain: pencarian kunci idempotensi memakai `withoutGlobalScopes()` **tanpa** batas tenant, sehingga kunci milik tenant lain dapat mengembalikan record tenant lain. Pengetatan itu dikerjakan sekaligus di increment ini.
+
+## Keputusan desain
+- **Laporan tidak menghitung ulang apa pun di lapisan API**: controller memanggil use case yang sama dengan UI (`App\Reports\SalesReport`), sehingga hanya ada SATU sumber kebenaran untuk FR-09 (omzet ≠ penerimaan ≠ piutang baru; transaksi batal tidak dihitung). Kunci balasan mengikuti istilah domain (`omzet_minor`, `penerimaan_minor`, `piutang_baru_minor`, `dibatalkan_minor`) agar tidak lahir kamus kedua.
+- **Izin & audit laporan tetap di use case** (FR-12): `report.financial.view` diperiksa `ActionAuthorizer` dan akses yang benar-benar terjadi dicatat `report.financial.viewed` dengan aktor + periode. Endpoint API tidak menyalin logika itu.
+- **Modul nonaktif = 403, bukan data kosong** (FR-13), konsisten dengan Increment 53: `reports` untuk laporan, `receivables` untuk pembayaran piutang (modul piutang memang hanya ada di profil `credit_sales`/`advanced`).
+- **Idempotensi pembayaran piutang** (§11.1): `client_request_id` wajib; penulisan baru → **201**, balasan ulang → **200** dengan `sync.status = already_applied` + `sync.idempotent_replay = true`, tanpa menambah baris pembayaran atau menurunkan sisa saldo dua kali.
+- **Kebenaran saldo tetap milik domain**: nominal ≤ 0, melebihi sisa, atau piutang yang sudah lunas ditolak aksi domain (422 dengan pesan Indonesia), bukan diperiksa ulang di controller. Respons menyertakan sisa saldo TERBARU (`receivable.remaining_minor` + `status`) agar klien tidak menghitung sendiri.
+- **Pengetatan idempotensi §12 diperluas**: `RecordReceivablePayment`, `CreatePurchaseOrder`, `CreatePurchaseReturn`, `ReceiveGoods`, `RecordSupplierPayment`, dan `CreateSalesReturn` kini mencari kunci DI DALAM tenant pemanggil; migrasi mengganti unik global `client_request_id` pada `receivable_payments` & `sales_returns` dengan unik gabungan `(tenant_id, client_request_id)` (hanya indeks — non-destruktif).
+- **Paritas skema untuk tes**: `2026_10_12_000003_finish_purchase_sync_fields` menghapus kolom uang legacy hanya pada MySQL (memakai `SHOW COLUMNS`), sehingga di sqlite kolom `NOT NULL` tanpa default itu masih ada dan membuat aksi domain gagal di tes padahal benar di produksi. Migrasi baru menutup selisih itu memakai `Schema::hasColumn()` di semua driver — bukan bug produksi, tetapi membuat tes benar-benar menguji skema yang dipakai produksi.
+
+## Perubahan
+- **`app/Support/Api/ReceivableLocator.php`** — pencarian piutang satu tenant (UUID sinkronisasi atau id numerik) + pencarian pembayaran berdasarkan kunci idempotensi, keduanya dengan batas `tenant_id` eksplisit.
+- **`app/Support/Api/ReceivablePaymentPayload.php`** — bentuk kiriman pembayaran piutang (nominal minor, metode + label Indonesia, aktor, catatan, `paid_at`, status pembalikan).
+- **`app/Http/Requests/Api/V1/StoreReceivablePaymentRequest.php`** — validasi kontrak pembayaran; `payment_method` hanya metode yang boleh DIPILIH (`mixed` dikecualikan, FR-05); `device_id` wajib milik tenant & belum dicabut; pesan Indonesia per medan.
+- **`app/Http/Controllers/Api/V1/ReceivablePaymentController.php`** — `POST /api/v1/receivables/{receivable}/payments` (201 baru, 200 balasan ulang, 404 piutang tenant lain/tidak ada, 403 modul nonaktif).
+- **`app/Http/Requests/Api/V1/SalesReportRequest.php`** — `date` XOR `from`/`to`, format `Y-m-d`.
+- **`app/Http/Controllers/Api/V1/SalesReportController.php`** — `GET /api/v1/reports/sales` (satu hari atau rentang; default hari ini).
+- **`app/Actions/Receivables/RecordReceivablePayment.php`**, **`app/Actions/Purchases/CreatePurchaseOrder.php`**, **`CreatePurchaseReturn.php`**, **`ReceiveGoods.php`**, **`RecordSupplierPayment.php`**, **`app/Actions/Sales/CreateSalesReturn.php`** — pencarian kunci idempotensi dibatasi tenant (§12).
+- **`database/migrations/2026_10_13_220000_scope_remaining_idempotency_keys_to_tenant.php`** — unik idempotensi per tenant untuk `receivable_payments` & `sales_returns`.
+- **`database/migrations/2026_10_13_230000_drop_legacy_money_columns_for_schema_parity.php`** — kolom uang legacy dibersihkan di semua driver, bukan hanya MySQL.
+- **`routes/api.php`** — dua endpoint di grup `auth:sanctum` + `user.tenant`.
+
+## Pengujian
+- **`tests/Feature/Api/ReceivablePaymentApiTest.php`** (9) — penagihan normal lewat alur nyata (checkout kredit API → bayar) menurunkan sisa saldo & menulis satu baris pembayaran; pelunasan menutup piutang (`status = closed`); balasan ulang `client_request_id` → 200 & tidak menagih dua kali; melebihi sisa → 422; piutang lunas → 422; piutang tenant lain & rujukan tidak dikenal → 404 tanpa penulisan; pelanggaran kontrak dilaporkan per medan (`mixed` & `device_id` asing ditolak); modul piutang nonaktif → 403; tanpa token → 401 dan **token perangkat ditolak** (§15).
+- **`tests/Feature/Api/SalesReportApiTest.php`** (8) — laporan hari ini default memuat omzet/penerimaan/jumlah transaksi/metode pembayaran/riwayat + amplop meta; `date` dan `from`/`to` menyaring periode (termasuk penjualan yang di-*backdate*); penjualan yang dibatalkan tidak dihitung di omzet tetapi tetap tampil di riwayat bersama alasannya (§17.4); izin: `inventory_manager` → 403 TANPA jejak audit, `viewer` → 200 DENGAN audit `report.financial.viewed` atas namanya (FR-12); modul laporan nonaktif → 403; format tanggal salah → 422; penjualan tenant lain tidak ikut terhitung di kedua arah (§12); tanpa token → 401 dan token perangkat ditolak (§15).
+- **`tests/Feature/Tenancy/IdempotencyTenantScopeTest.php`** (6) — satu kunci yang sama dipakai di dua tenant untuk enam aksi tulis (piutang, retur penjualan, pesanan pembelian, penerimaan barang, pembayaran pemasok, retur pembelian): hasilnya SELALU record milik tenant pemanggil, dengan pemeriksaan tambahan sisa saldo, jumlah baris pembayaran, nomor pesanan, dan jumlah item retur.
+
+## Status suite
+- **906 passed / 0 failed / 4 skipped** (3323 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 18 file, tanpa perbaikan gaya.
+- Daftar endpoint §18 kini **lengkap**: `auth/login`, `devices/register`, `bootstrap`, `products`, `sales` (+ rincian & void), `receivables/{id}/payments`, `reports/sales`, `sync/push`, `sync/pull`, `payments/webhooks/{provider}`.
+- Utang lain: adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), barcode kamera, multi-cabang/transfer stok (stok masih tunggal per tenant), dokumentasi Fase 6, minor-unit data demo (`TransactionSeeder`/`PaymentSeeder`/dll masih menulis kolom lama), `RolePermissionSeeder` legacy, dead code `app/Models/Recipe.php`.
+
+---
+
 # Rebuild POS Universal — Fase 5: Endpoint Tulis API — Checkout, Rincian, & Void Penjualan (§18, Increment 54) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

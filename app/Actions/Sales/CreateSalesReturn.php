@@ -84,8 +84,11 @@ class CreateSalesReturn
 
         $clientRequestId = $data['client_request_id'] ?? null;
 
+        // §12: kunci idempotensi dibatasi tenant pemanggil.
+        $tenantId = $data['tenant_id'] ?? app(TenantContext::class)->id();
+
         if (is_string($clientRequestId) && $clientRequestId !== '') {
-            $existing = $this->findByIdempotencyKey($clientRequestId);
+            $existing = $this->findByIdempotencyKey($clientRequestId, $tenantId);
 
             if ($existing !== null) {
                 return $existing->load('items');
@@ -96,7 +99,7 @@ class CreateSalesReturn
             return DB::transaction(fn () => $this->persist($data, $items, $reason, $clientRequestId));
         } catch (QueryException $e) {
             if ($this->isIdempotencyViolation($e) && is_string($clientRequestId) && $clientRequestId !== '') {
-                return ($this->findByIdempotencyKey($clientRequestId) ?? throw $e)->load('items');
+                return ($this->findByIdempotencyKey($clientRequestId, $tenantId) ?? throw $e)->load('items');
             }
 
             throw $e;
@@ -478,11 +481,12 @@ class CreateSalesReturn
         );
     }
 
-    private function findByIdempotencyKey(string $clientRequestId): ?SalesReturn
+    private function findByIdempotencyKey(string $clientRequestId, ?string $tenantId = null): ?SalesReturn
     {
         return SalesReturn::query()
             ->withoutGlobalScopes()
             ->where('client_request_id', $clientRequestId)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
             ->first();
     }
 
