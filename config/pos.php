@@ -53,6 +53,25 @@ return [
         'restore_stock_on_return' => (bool) env('POS_RESTORE_STOCK_ON_RETURN', true),
     ],
 
+    'receivables' => [
+        // FR-07: "Tanggal jatuh tempo." Penjualan kredit tanpa `due_at`
+        // eksplisit dari pemanggil memakai tenggat default ini (hari).
+        // 0 / negatif = tidak menetapkan tenggat.
+        'default_due_days' => (int) env('POS_RECEIVABLE_DUE_DAYS', 30),
+
+        // FR-07: "Batas kredit dan peringatan pelanggan dapat dikonfigurasi per
+        // toko."
+        //
+        // false (default) = hanya DIPERINGATKAN: penjualan kredit yang melewati
+        //   batas tetap disimpan, dan UI menampilkan peringatan agar kasir
+        //   memutuskan sadar;
+        // true = DIBATASI: penjualan kredit yang membuat total piutang pelanggan
+        //   melewati `customers.credit_limit` ditolak (`CreditLimitExceeded`).
+        //
+        // Pelanggan dengan `credit_limit` 0 (atau kosong) dianggap tanpa batas.
+        'enforce_credit_limit' => (bool) env('POS_ENFORCE_CREDIT_LIMIT', false),
+    ],
+
     'inventory' => [
         // §11.4 "Konflik stok": "Owner dapat mengaktifkan kebijakan stok
         // negatif atau membatasi penjualan berdasarkan kebutuhan bisnis."

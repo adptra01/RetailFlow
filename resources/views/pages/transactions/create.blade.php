@@ -5,6 +5,7 @@ use App\Actions\Sales\CreateSale;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentVerification;
 use App\Exceptions\Payments\QrisNotConfigured;
+use App\Exceptions\Sales\CreditLimitExceeded;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\InvalidPaymentVerification;
@@ -12,6 +13,7 @@ use App\Models\Category;
 use App\Models\Customer;
 use App\Models\Product;
 use App\Models\ProductUnit;
+use App\Models\Receivable;
 use App\Models\Tenant;
 use App\Models\Transaction;
 use App\Support\Money\Money;
@@ -201,6 +203,55 @@ $effectivePaidMinor = computed(function () {
 });
 
 $changeMinor = computed(fn () => $this->effectivePaidMinor - $this->totalMinor);
+
+/*
+ * FR-07 "Batas kredit dan peringatan pelanggan": status kredit pelanggan yang
+ * dipilih untuk penjualan kredit. `null` bila bukan kredit, tanpa pelanggan,
+ * atau pelanggan tanpa limit. `exceeded` = penjualan ini akan melewati limit.
+ */
+$creditLimitInfo = computed(function () {
+    if (! $this->isCredit || ! $this->customer_id) {
+        return null;
+    }
+
+    $tenantId = auth()->user()?->tenant_id;
+
+    $customer = Customer::query()
+        ->withoutGlobalScopes()
+        ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
+        ->find($this->customer_id);
+
+    if (! $customer) {
+        return null;
+    }
+
+    $limitMinor = Money::fromMajor($customer->credit_limit ?? 0)->minor();
+
+    if ($limitMinor <= 0) {
+        return null;
+    }
+
+    $outstandingMinor = (int) Receivable::query()
+        ->withoutGlobalScopes()
+        ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
+        ->where('customer_id', $customer->id)
+        ->where('status', 'open')
+        ->sum('remaining_minor');
+
+    $requestedMinor = max(0, $this->totalMinor - $this->effectivePaidMinor);
+    $projectedMinor = $outstandingMinor + $requestedMinor;
+
+    return [
+        'customer_name' => $customer->name,
+        'limit_minor' => $limitMinor,
+        'outstanding_minor' => $outstandingMinor,
+        'requested_minor' => $requestedMinor,
+        'projected_minor' => $projectedMinor,
+        'available_minor' => max(0, $limitMinor - $outstandingMinor),
+        'exceeded' => $projectedMinor > $limitMinor,
+        'enforced' => (bool) config('pos.receivables.enforce_credit_limit', false),
+    ];
+});
 
 $qrisTenant = computed(function () {
     $tenantId = auth()->user()?->tenant_id;
@@ -439,6 +490,14 @@ $confirmSave = function () {
         return;
     }
 
+    // FR-07: bila toko membatasi kredit, tolak lebih awal dengan pesan yang
+    // jelas (domain tetap memeriksa ulang sebagai jaring pengaman).
+    if ($this->creditLimitInfo && $this->creditLimitInfo['exceeded'] && $this->creditLimitInfo['enforced']) {
+        Flux::toast(variant: 'error', text: __('Credit limit exceeded for :name.', ['name' => $this->creditLimitInfo['customer_name']]));
+
+        return;
+    }
+
     // Idempotency key: one per logical checkout attempt (FR-04).
     if ($this->client_request_id === '') {
         $this->client_request_id = (string) Str::uuid7();
@@ -528,7 +587,7 @@ $save = function () {
         $this->savedTransactionId = $transaction->id;
         $this->savedInvoiceNumber = $transaction->invoice_number;
         $this->showSuccessModal = true;
-    } catch (InsufficientStock|InvalidPaymentAmount|InvalidPaymentVerification|QrisNotConfigured|\InvalidArgumentException $e) {
+    } catch (InsufficientStock|InvalidPaymentAmount|InvalidPaymentVerification|QrisNotConfigured|CreditLimitExceeded|\InvalidArgumentException $e) {
         // Failure must never empty the cart (FR-04).
         $this->showConfirmModal = false;
         Flux::toast(variant: 'error', text: $e->getMessage());
@@ -862,6 +921,34 @@ $save = function () {
                                             <p class="mt-1 text-xs text-red-500">{{ __('Credit sale — select a customer.') }}</p>
                                         @endif
                                     </div>
+
+                                    {{-- FR-07: batas kredit pelanggan (selalu terlihat, bukan hanya di modal) --}}
+                                    @if ($this->creditLimitInfo && $this->creditLimitInfo['exceeded'])
+                                        <div class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                                            <p class="font-medium">
+                                                {{ __('Credit limit exceeded for :name.', ['name' => $this->creditLimitInfo['customer_name']]) }}
+                                            </p>
+                                            <p class="mt-1">
+                                                {{ __('Limit: :limit · outstanding: :outstanding · this sale: :requested', [
+                                                    'limit' => Number::currency($this->creditLimitInfo['limit_minor'], 'IDR', 'id'),
+                                                    'outstanding' => Number::currency($this->creditLimitInfo['outstanding_minor'], 'IDR', 'id'),
+                                                    'requested' => Number::currency($this->creditLimitInfo['requested_minor'], 'IDR', 'id'),
+                                                ]) }}
+                                            </p>
+                                            <p class="mt-1">
+                                                {{ $this->creditLimitInfo['enforced']
+                                                    ? __('Store policy blocks credit sales over the limit.')
+                                                    : __('Store policy only warns — you may still record this sale.') }}
+                                            </p>
+                                        </div>
+                                    @elseif ($this->creditLimitInfo)
+                                        <div class="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                                            {{ __('Available credit for :name: :available', [
+                                                'name' => $this->creditLimitInfo['customer_name'],
+                                                'available' => Number::currency($this->creditLimitInfo['available_minor'], 'IDR', 'id'),
+                                            ]) }}
+                                        </div>
+                                    @endif
                                 </div>
                             </div>
 
@@ -1013,6 +1100,33 @@ $save = function () {
                     @if ($this->isCredit && $customer_name)
                         <div class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
                             {{ __('This is a credit sale. The unpaid balance will be added to the customer account.') }}
+                        </div>
+                    @endif
+
+                    @if ($this->creditLimitInfo && $this->creditLimitInfo['exceeded'])
+                        <div class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                            <p class="font-medium">
+                                {{ __('Credit limit exceeded for :name.', ['name' => $this->creditLimitInfo['customer_name']]) }}
+                            </p>
+                            <p class="mt-1 text-xs">
+                                {{ __('Limit: :limit · outstanding: :outstanding · this sale: :requested', [
+                                    'limit' => Number::currency($this->creditLimitInfo['limit_minor'], 'IDR', 'id'),
+                                    'outstanding' => Number::currency($this->creditLimitInfo['outstanding_minor'], 'IDR', 'id'),
+                                    'requested' => Number::currency($this->creditLimitInfo['requested_minor'], 'IDR', 'id'),
+                                ]) }}
+                            </p>
+                            <p class="mt-1 text-xs">
+                                {{ $this->creditLimitInfo['enforced']
+                                    ? __('Store policy blocks credit sales over the limit.')
+                                    : __('Store policy only warns — you may still record this sale.') }}
+                            </p>
+                        </div>
+                    @elseif ($this->creditLimitInfo)
+                        <div class="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                            {{ __('Available credit for :name: :available', [
+                                'name' => $this->creditLimitInfo['customer_name'],
+                                'available' => Number::currency($this->creditLimitInfo['available_minor'], 'IDR', 'id'),
+                            ]) }}
                         </div>
                     @endif
 

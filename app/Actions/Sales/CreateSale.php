@@ -7,6 +7,7 @@ use App\Enums\PaymentMethod;
 use App\Enums\PaymentVerification;
 use App\Enums\SyncOperationType;
 use App\Exceptions\Payments\QrisNotConfigured;
+use App\Exceptions\Sales\CreditLimitExceeded;
 use App\Exceptions\Sales\InsufficientStock;
 use App\Exceptions\Sales\InvalidPaymentAmount;
 use App\Exceptions\Sales\InvalidPaymentVerification;
@@ -23,6 +24,7 @@ use App\Support\Money\Money;
 use App\Support\Sync\Outbox;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -41,8 +43,11 @@ use Illuminate\Support\Str;
  *  - discount honesty (FR-06): snapshots are taken on the line items so later
  *    price/discount changes never alter historical sales;
  *  - receivable basics (FR-07): when payment is partial the sale becomes a
- *    credit sale — a customer is required and only the unpaid balance moves
- *    into the customer balance;
+ *    credit sale — a customer is required, only the unpaid balance moves
+ *    into the customer balance, the receivable gets a due date
+ *    (`pos.receivables.default_due_days`, overridable per call), and the
+ *    customer's credit limit is enforced or warned about per store policy
+ *    (`pos.receivables.enforce_credit_limit`);
  *  - traceability: every unit of stock leaving the shelf is recorded in the
  *    ledger with reference_type "sale" (FR-08);
  *  - offline-ready (§17.3 langkah 9 / §11.1): bila penjualan berasal dari
@@ -112,6 +117,8 @@ class CreateSale
      *     device_id?: string|null,
      *     notes?: string|null,
      *     tenant_id?: string|null,
+     *     due_at?: string|null,
+     *     due_days?: int|null,
      *     allow_negative_stock?: bool|null,
      *     enqueue_for_sync?: bool|null,
      * } $data
@@ -194,6 +201,19 @@ class CreateSale
         // FR-07: receivables only exist when there is an unpaid balance.
         if ($isCredit && ! $customer) {
             throw new InvalidPaymentAmount('Pilih pelanggan untuk penjualan kredit.');
+        }
+
+        // FR-07: penjualan kredit punya tenggat, dan batas kredit pelanggan
+        // diperiksa sebelum apa pun ditulis (kebijakan toko yang menentukan
+        // blokir atau peringatan; lihat `assertCreditLimit`).
+        $dueAt = null;
+
+        if ($isCredit && $customer) {
+            $unpaid = $total->subtract($paid);
+
+            $this->assertCreditLimit($customer, $unpaid, $tenantId);
+
+            $dueAt = $this->resolveDueAt($data);
         }
 
         $transaction = new Transaction;
@@ -301,7 +321,7 @@ class CreateSale
                 'transaction_id' => $transaction->id,
                 'original_amount_minor' => $unpaid->minor(),
                 'remaining_minor' => $unpaid->minor(),
-                'due_at' => null,
+                'due_at' => $dueAt,
                 'status' => 'open',
             ]);
         }
@@ -323,9 +343,68 @@ class CreateSale
             ],
         ]);
 
-        $this->enqueueForSync($data, $transaction, $items, $settlement, $tenantId, $clientRequestId);
+        $this->enqueueForSync($data, $transaction, $items, $settlement, $tenantId, $clientRequestId, $dueAt);
 
         return $transaction->load('items');
+    }
+
+    /**
+     * FR-07: "Batas kredit dan peringatan pelanggan dapat dikonfigurasi per
+     * toko." Piutang tertagih dihitung dari baris piutang terbuka (sumber
+     * tunggal), bukan dari cermin `customers.balance`.
+     *
+     * Pelanggan tanpa limit (`credit_limit` <= 0) selalu lolos. Bila kebijakan
+     * toko hanya memberi peringatan, penjualan tetap dicatat dan UI yang
+     * menampilkan warning; bila membatasi, kredit yang melewati limit ditolak.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function assertCreditLimit(Customer $customer, Money $unpaid, ?string $tenantId): void
+    {
+        $limitMinor = Money::fromMajor($customer->credit_limit ?? 0)->minor();
+
+        if ($limitMinor <= 0) {
+            return;
+        }
+
+        $outstandingMinor = (int) Receivable::query()
+            ->withoutGlobalScopes()
+            ->where('customer_id', $customer->id)
+            ->when($tenantId !== null, fn ($query) => $query->where('tenant_id', $tenantId))
+            ->where('status', 'open')
+            ->sum('remaining_minor');
+
+        $projectedMinor = $outstandingMinor + $unpaid->minor();
+
+        if ($projectedMinor <= $limitMinor) {
+            return;
+        }
+
+        if (! (bool) config('pos.receivables.enforce_credit_limit', false)) {
+            return;
+        }
+
+        throw CreditLimitExceeded::forCustomer($customer, $limitMinor, $projectedMinor);
+    }
+
+    /**
+     * FR-07: tenggat piutang. Pemanggil boleh memberi `due_at` absolut (dipakai
+     * perangkat agar identik dengan waktu lokalnya) atau `due_days` relatif;
+     * bila keduanya kosong, tenggat default toko yang dipakai.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function resolveDueAt(array $data): ?Carbon
+    {
+        if (! empty($data['due_at'])) {
+            return Carbon::parse((string) $data['due_at']);
+        }
+
+        $days = array_key_exists('due_days', $data)
+            ? (int) $data['due_days']
+            : (int) config('pos.receivables.default_due_days', 30);
+
+        return $days > 0 ? Carbon::now()->addDays($days) : null;
     }
 
     /**
@@ -349,6 +428,7 @@ class CreateSale
         array $settlement,
         ?string $tenantId,
         ?string $clientRequestId,
+        ?Carbon $dueAt = null,
     ): void {
         $deviceId = $data['device_id'] ?? null;
 
@@ -365,7 +445,7 @@ class CreateSale
             'sale',
             $transaction->uuid,
             SyncOperationType::Create,
-            $this->syncPayload($data, $items, $settlement),
+            $this->syncPayload($data, $items, $settlement, $dueAt),
             $clientRequestId,
         );
     }
@@ -385,7 +465,7 @@ class CreateSale
      * @param  array{method: PaymentMethod, verification: PaymentVerification, paid: Money, change: Money, tenders: list<array{payment_method: PaymentMethod, payment_verification: PaymentVerification, amount_minor: int, reference: string|null, notes: string|null}>}  $settlement
      * @return array<string, mixed>
      */
-    private function syncPayload(array $data, array $items, array $settlement): array
+    private function syncPayload(array $data, array $items, array $settlement, ?Carbon $dueAt = null): array
     {
         $tenders = $settlement['tenders'];
 
@@ -396,6 +476,9 @@ class CreateSale
             'payment_method' => $settlement['method']->value,
             'payment_verification' => $settlement['verification']->value,
             'paid_minor' => $settlement['paid']->minor(),
+            // FR-07: tenggat piutang ikut dikirim agar penjualan offline
+            // menghasilkan piutang dengan jatuh tempo yang sama di server.
+            'due_at' => $dueAt?->toIso8601String(),
             'payments' => count($tenders) > 1
                 ? array_map(static fn (array $tender): array => [
                     'payment_method' => $tender['payment_method']->value,

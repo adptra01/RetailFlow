@@ -1,3 +1,38 @@
+# Rebuild POS Universal — Fase 5: Batas Kredit & Jatuh Tempo Piutang (FR-07, Increment 50) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (FR-07 "Tanggal jatuh tempo", "Batas kredit dan peringatan pelanggan dapat dikonfigurasi per toko", "Piutang hanya terbentuk dari transaksi yang memiliki saldo belum dibayar"; §17.3 langkah 6 "piutang lahir dari saldo belum dibayar"; FR-09 laporan umur piutang).
+
+## Latar
+Setelah Increment 49 (koreksi pembayaran ber-audit), dua kewajiban FR-07 masih kosong: **tanggal jatuh tempo** — `receivables.due_at` selalu ditulis `null`, sehingga laporan umur piutang (`GenerateAgingReceivablesReport`) tidak punya bahan dan semua piutang tampak "belum jatuh tempo" — dan **batas kredit pelanggan** — `customers.credit_limit` hanya tersimpan & ditampilkan, tak pernah diperiksa, sehingga toko tak bisa menegakkan kebijakannya.
+
+## Perubahan
+
+### Konfigurasi
+- **`config/pos.php`** — bagian `pos.receivables` baru:
+  - `default_due_days` (env `POS_RECEIVABLE_DUE_DAYS`, default 30) — tenggat default penjualan kredit; `0`/negatif berarti tanpa tenggat;
+  - `enforce_credit_limit` (env `POS_ENFORCE_CREDIT_LIMIT`, default **false**) — `false` = hanya memperingatkan, `true` = membatasi (menolak).
+
+### Domain
+- **`Actions\Sales\CreateSale`** — pada penjualan kredit:
+  - **tenggat** dihitung lewat `resolveDueAt()`: `due_at` absolut dari pemanggil menang (dipakai perangkat), lalu `due_days` relatif, lalu default toko; nilai disimpan ke `receivables.due_at` (menggantikan `null` yang lama);
+  - **batas kredit** diperiksa lewat `assertCreditLimit()` **sebelum apa pun ditulis**: piutang tertagih dihitung dari baris piutang **terbuka** (sumber tunggal, `withoutGlobalScopes` + filter `tenant_id`), pelanggan tanpa limit (<= 0) selalu lolos, dan hanya ketika `enforce_credit_limit` aktif pelanggaran melempar `CreditLimitExceeded` — sehingga penjualan yang ditolak tidak menyisakan transaksi, item, mutasi stok, piutang, atau audit;
+  - payload sinkronisasi kini memuat **`due_at`** sehingga penjualan offline menghasilkan piutang dengan jatuh tempo yang sama di server.
+- **`Exceptions\Sales\CreditLimitExceeded`** — pesan Indonesia (nama pelanggan, limit, proyeksi piutang) + respons JSON 422 untuk jalur API.
+
+### UI
+- **`resources/views/pages/transactions/create.blade.php`** — computed `creditLimitInfo` (limit/sisa/tertagih/proyeksi) dan banner di panel pembayaran: merah **"Credit limit exceeded"** dengan rincian limit/tertagih/penjualan ini plus penjelasan kebijakan (membatasi vs. hanya memperingatkan), atau info **"Available credit"** saat masih di bawah limit. `confirmSave` menahan kasir lebih awal bila kebijakan membatasi (pesan jelas), dan `save` menangkap `CreditLimitExceeded` sebagai jaring pengaman (keranjang tidak dikosongkan).
+
+### Pengujian
+- **`tests/Feature/Sales/CreditLimitAndDueDateTest.php`** (11) — tenggat default/override `due_days`/`due_at` eksplisit/`due_days=0`; bayar penuh tidak membuat piutang; pelanggan tanpa limit tak pernah diblokir; kebijakan membatasi menolak **dan menulis nol** (transaksi, piutang, mutasi stok, audit, saldo, stok); kebijakan memperingatkan tetap mencatat penjualan; penjualan tepat di limit lolos; piutang terbuka yang ada mengurangi sisa kredit; payload outbox perangkat memuat `due_at`.
+- **`tests/Feature/Sales/CreditLimitPosUiTest.php`** (4) — perilaku `confirmSave`/`save` pada POS untuk ketiga kebijakan, dan penjualan kredit POS menyimpan jatuh tempo.
+
+## Status suite
+- **821 passed / 0 failed / 4 skipped** (2849 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 6 file, 1 perbaikan gaya.
+- Utang yang masih terbuka: catatan penagihan (billing notes) FR-07, adaptor payment gateway/QRIS dinamis (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, dan pemeriksaan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`).
+
+---
+
 # Rebuild POS Universal — Fase 5: Koreksi Pembayaran Piutang Ber-Audit (FR-07, Increment 49) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026
