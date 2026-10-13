@@ -157,4 +157,30 @@ return [
         'max_age_days' => (int) env('POS_BACKUP_MAX_AGE_DAYS', 7),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ambang alert lokal (FR-10)
+    |--------------------------------------------------------------------------
+    |
+    | Alert berbasis kondisi lokal: ambang toleransi ditentukan di sini agar
+    | tidak tersebar sebagai angka ajaib, dan dapat disesuaikan per toko tanpa
+    | mengubah kode. Alert hanya dibuat bila kondisi bertahan melewati ambang —
+    | supaya satu keterlambatan sesaat tidak memicu notifikasi.
+    |
+    */
+
+    'alerts' => [
+        // Operasi outbox yang belum terkirim lebih lama dari ini (menit)
+        // memicu "sinkronisasi tertunda" (§11.5).
+        'sync_backlog_minutes' => (int) env('POS_ALERTS_SYNC_BACKLOG_MINUTES', 30),
+        // Perangkat aktif yang tidak menyapa server lebih lama dari ini (jam)
+        // dianggap belum tersinkron.
+        'device_stale_hours' => (int) env('POS_ALERTS_DEVICE_STALE_HOURS', 24),
+        // Transaksi QRIS/gateway yang masih "menunggu verifikasi" lebih lama
+        // dari ini (menit) perlu diperiksa kasir (FR-05, §14).
+        'payment_verification_minutes' => (int) env('POS_ALERTS_PAYMENT_VERIFICATION_MINUTES', 30),
+        // Rentang pemeriksaan selisih stok hasil opname (hari).
+        'stock_discrepancy_days' => (int) env('POS_ALERTS_STOCK_DISCREPANCY_DAYS', 7),
+    ],
+
 ];

@@ -1,3 +1,38 @@
+# Rebuild POS Universal — Fase 5: Kategori Alert Lokal Lengkap (§11.5, FR-10, Increment 48) (belum dirilis)
+
+**Tanggal:** 13 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (FR-10 "Daftar alert yang harus ada": permintaan belum tersinkron / sinkronisasi gagal / perangkat belum tersinkron / pembayaran menunggu verifikasi / selisih stok; §11.5 perangkat lama offline; §14 Mode B status `pending`; §17 notifikasi lokal).
+
+## Latar
+Increment 47 menutup jalur tarik server→perangkat (§11.3 langkah 9–11). Yang belum lengkap adalah **daftar alert FR-10**: `AlertGenerator` baru menjalankan 4 kategori dari 9 yang disebut plan (stok menipis, data produk belum lengkap, piutang jatuh tempo, backup terlalu lama). Kondisi operasional yang justru paling sering mendahului kegagalan — sinkronisasi menumpuk, operasi ditolak server, perangkat tidak menyapa, pembayaran menggantung, dan selisih stok hasil opname — belum memunculkan notifikasi apa pun, sehingga pengguna tidak punya cara sadar sebelum datanya berbeda dari server.
+
+## Perubahan
+
+### Kategori baru
+- **`Alert`** — 5 konstanta jenis baru: `sync.backlog`, `sync.failed`, `device.stale`, `payment.awaiting_verification`, `stock.discrepancy` (semuanya aditif; `device_id` sudah ada di skema sejak awal).
+- **`Support\Alerts\AlertGenerator`** — 5 metode baru, semuanya masuk ke `run()`:
+  - **`syncBacklog()`** (§11.5) — operasi `pending` yang melewati `pos.alerts.sync_backlog_minutes` (default 30), **dikelompokkan per perangkat** (satu alert, payload `pending_count` + waktu tertua); perangkat tanpa `device_id` dilewati.
+  - **`syncFailed()`** — operasi berstatus `failed` (ditolak server), dikelompokkan per perangkat, keparahan `critical` (butuh tindakan pengguna, bukan sekadar menunggu).
+  - **`staleDevices()`** — perangkat aktif (belum dicabut) yang tidak menyapa server melewati `pos.alerts.device_stale_hours` (default 24); **perangkat yang baru dibuat dikecualikan** agar pendaftaran baru tidak langsung memicu noise.
+  - **`paymentsAwaitingVerification()`** (FR-05, §14) — transaksi `awaiting_verification` yang belum dibatalkan dan melewati `pos.alerts.payment_verification_minutes` (default 30), keparahan `critical`.
+  - **`stockDiscrepancies()`** (FR-08) — opname dengan `difference != 0` dalam `pos.alerts.stock_discrepancy_days` (default 7), satu alert per produk (baris terbaru menang). `stock_opnames` tidak punya `tenant_id`, jadi kepemilikan disaring lewat produk.
+- **`createIfNew()`** — parameter opsional ke-6 `?string $deviceId = null`; alert berbasis perangkat mengisi `alerts.device_id` dan memakai `deduplication_key` ber-prefix id perangkat (`sync.backlog:{id}`, dst.) sehingga dedup tetap benar per perangkat.
+- **Fail-closed:** kategori baru memakai `resolveTenantId()` (tenant eksplisit **atau** konteks request); bila keduanya kosong, generator mengembalikan 0 dan tidak pernah membaca lintas-tenant.
+- **`config/pos.php`** — bagian `pos.alerts` baru (`sync_backlog_minutes`, `device_stale_hours`, `payment_verification_minutes`, `stock_discrepancy_days`, semua dapat di-override lewat env) supaya ambang tidak tersebar sebagai angka ajaib.
+- **`Console\Commands\GenerateAlerts`** — deskripsi diperbarui menyebut seluruh kategori.
+
+### UI
+- **`resources/views/pages/alerts/index.blade.php`** — filter jenis memuat 9 jenis, `$typeLabel()` + `$describe()` memberi label/kalimat Indonesia untuk tiap kategori baru (perangkat, jumlah operasi, invoice, selisih stok), dan subjudul menyebut sinkronisasi & pembayaran.
+
+### Pengujian
+- **`tests/Feature/Alerts/SyncAndOperationalAlertsTest.php`** (13) — backlog dibuat untuk operasi lama dan **tidak** untuk yang baru/tersinkron, dedup sampai dibaca; gagal dikelompokkan per perangkat; perangkat basi dibuat, dan dikecualikan untuk perangkat baru/baru menyapa/dicabut; pembayaran menunggu verifikasi dibuat, dan diabaikan untuk yang baru/terverifikasi/void; selisih stok per produk, mengabaikan stok cocok & produk tenant lain; backlog tidak bocor antar-tenant; kategori baru fail-closed tanpa tenant; `run()` menjumlahkan kategori baru.
+
+## Status suite
+- **792 passed / 0 failed / 4 skipped** (2775 assertions) — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 6 file, bersih.
+- Utang yang masih terbuka: adaptor payment gateway/QRIS (menunggu pilihan penyedia), OCR (FR-03), multi-cabang/transfer stok, dokumentasi Fase 6, pemeriksaan minor-unit pada data demo (`TransactionSeeder` belum mengisi `*_minor`), dan kategori alert kesembilan plan (aplikasi butuh update/migrasi DB) sengaja ditunda ke native updater Fase 6.
+
+---
+
 # Rebuild POS Universal — Fase 5: Tarik Perubahan Server ke Perangkat (§11.1, §11.3 langkah 9–11, §11.5, Increment 47) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

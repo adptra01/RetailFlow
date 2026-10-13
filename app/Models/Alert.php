@@ -25,6 +25,21 @@ class Alert extends Model
 
     public const TYPE_BACKUP_OVERDUE = 'backup.overdue';
 
+    /** Operasi outbox yang lama belum terkirim (§11.5, FR-10). */
+    public const TYPE_SYNC_BACKLOG = 'sync.backlog';
+
+    /** Operasi yang ditolak server dan butuh tindakan pengguna (FR-10). */
+    public const TYPE_SYNC_FAILED = 'sync.failed';
+
+    /** Perangkat terdaftar yang lama tidak menyapa server (FR-10). */
+    public const TYPE_DEVICE_STALE = 'device.stale';
+
+    /** Transaksi menunggu verifikasi pembayaran (FR-05, FR-10). */
+    public const TYPE_PAYMENT_UNVERIFIED = 'payment.awaiting_verification';
+
+    /** Selisih stok hasil opname yang belum dijelaskan (FR-08, FR-10). */
+    public const TYPE_STOCK_DISCREPANCY = 'stock.discrepancy';
+
     public const SEVERITY_INFO = 'info';
 
     public const SEVERITY_WARNING = 'warning';

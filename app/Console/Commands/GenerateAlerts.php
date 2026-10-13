@@ -10,7 +10,7 @@ class GenerateAlerts extends Command
 {
     protected $signature = 'pos:alerts:generate';
 
-    protected $description = 'Buat alert lokal (FR-10): stok menipis, data produk belum lengkap, piutang jatuh tempo, backup terlalu lama.';
+    protected $description = 'Buat alert lokal (FR-10): stok menipis, data produk belum lengkap, piutang jatuh tempo, backup terlalu lama, sinkronisasi tertunda/gagal, perangkat basi, pembayaran menunggu verifikasi, selisih stok.';
 
     public function handle(): int
     {

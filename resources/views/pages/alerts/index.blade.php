@@ -17,7 +17,7 @@ middleware('verified');
 state([
     'scope' => 'unread', // unread | all
     'severity' => '',    // '' | info | warning | critical
-    'type' => '',        // '' | stock.low | product.incomplete_data | receivable.due | backup.overdue
+    'type' => '',        // '' | stock.low | product.incomplete_data | receivable.due | backup.overdue | sync.backlog | sync.failed | device.stale | payment.awaiting_verification | stock.discrepancy
 ])->url();
 
 /**
@@ -67,6 +67,11 @@ $alertTypes = function (): array {
         Alert::TYPE_PRODUCT_INCOMPLETE_DATA,
         Alert::TYPE_RECEIVABLE_DUE,
         Alert::TYPE_BACKUP_OVERDUE,
+        Alert::TYPE_SYNC_BACKLOG,
+        Alert::TYPE_SYNC_FAILED,
+        Alert::TYPE_DEVICE_STALE,
+        Alert::TYPE_PAYMENT_UNVERIFIED,
+        Alert::TYPE_STOCK_DISCREPANCY,
     ];
 };
 
@@ -76,6 +81,11 @@ $typeLabel = function (string $type): string {
         Alert::TYPE_PRODUCT_INCOMPLETE_DATA => __('Data produk belum lengkap'),
         Alert::TYPE_RECEIVABLE_DUE => __('Piutang jatuh tempo'),
         Alert::TYPE_BACKUP_OVERDUE => __('Backup terlalu lama'),
+        Alert::TYPE_SYNC_BACKLOG => __('Sinkronisasi tertunda'),
+        Alert::TYPE_SYNC_FAILED => __('Sinkronisasi gagal'),
+        Alert::TYPE_DEVICE_STALE => __('Perangkat belum tersinkron'),
+        Alert::TYPE_PAYMENT_UNVERIFIED => __('Pembayaran menunggu verifikasi'),
+        Alert::TYPE_STOCK_DISCREPANCY => __('Selisih stok'),
         default => $type,
     };
 };
@@ -116,6 +126,29 @@ $describe = function (Alert $alert): string {
         ]),
         Alert::TYPE_BACKUP_OVERDUE => __('Backup terakhir :at; segera buat backup baru.', [
             'at' => $payload['last_backup_at'] ?? '-',
+        ]),
+        Alert::TYPE_SYNC_BACKLOG => __('Perangkat :name punya :count operasi menunggu terkirim sejak :at.', [
+            'name' => $payload['device_name'] ?? '-',
+            'count' => $payload['pending_count'] ?? 0,
+            'at' => $payload['oldest_at'] ?? '-',
+        ]),
+        Alert::TYPE_SYNC_FAILED => __('Perangkat :name memiliki :count operasi ditolak server.', [
+            'name' => $payload['device_name'] ?? '-',
+            'count' => $payload['failed_count'] ?? 0,
+        ]),
+        Alert::TYPE_DEVICE_STALE => __('Perangkat :name belum menyapa server sejak :at.', [
+            'name' => $payload['device_name'] ?? '-',
+            'at' => $payload['last_seen_at'] ?? '-',
+        ]),
+        Alert::TYPE_PAYMENT_UNVERIFIED => __('Pembayaran :invoice menunggu verifikasi (:method).', [
+            'invoice' => $payload['invoice_number'] ?? '-',
+            'method' => $payload['payment_method'] ?? '-',
+        ]),
+        Alert::TYPE_STOCK_DISCREPANCY => __('Selisih stok :name: sistem :system, fisik :actual (selisih :diff).', [
+            'name' => $payload['product_name'] ?? '-',
+            'system' => $payload['system_stock'] ?? '-',
+            'actual' => $payload['actual_stock'] ?? '-',
+            'diff' => $payload['difference'] ?? '-',
         ]),
         default => $alert->alert_type,
     };
@@ -185,7 +218,7 @@ $runChecks = function () {
             <div class="flex flex-wrap items-center justify-between gap-4">
                 <div>
                     <flux:heading size="xl">{{ __('Notifikasi') }}</flux:heading>
-                    <flux:subheading>{{ __('Peringatan otomatis dari kondisi toko (stok, produk, piutang, backup).') }}</flux:subheading>
+                    <flux:subheading>{{ __('Peringatan otomatis dari kondisi toko (stok, produk, piutang, backup, sinkronisasi, pembayaran).') }}</flux:subheading>
                 </div>
                 <div class="flex items-center gap-2">
                     <flux:button variant="filled" icon="arrow-path" wire:click="runChecks" wire:loading.attr="disabled"
