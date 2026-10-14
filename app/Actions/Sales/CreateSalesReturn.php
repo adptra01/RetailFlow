@@ -181,7 +181,6 @@ class CreateSalesReturn
             'receivable_adjustment_minor' => $receivableAdjustment,
             'refund_minor' => $refund,
             'stock_restored' => $restoreStock,
-            'total' => $total->major(),
             'user_id' => $data['user_id'],
             'location_id' => $data['location_id'] ?? null,
             'device_id' => $data['device_id'] ?? null,
@@ -213,8 +212,6 @@ class CreateSalesReturn
                 'unit_price_minor' => $line['unit_value']->minor(),
                 'discount_minor' => 0,
                 'subtotal_minor' => $value->minor(),
-                'price' => $line['unit_value']->major(),
-                'subtotal' => $value->major(),
                 'reason' => $line['reason'],
                 'tenant_id' => $tenantId,
             ]);

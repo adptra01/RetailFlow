@@ -42,11 +42,8 @@ class PaymentMethodDisplayTest extends TestCase
             'invoice_number' => 'INV-'.fake()->unique()->numerify('######'),
             'user_id' => $this->user->id,
             'customer_name' => 'Umum',
-            'total_amount' => 25000,
             'subtotal_minor' => 25000,
-            'paid_amount' => 25000,
             'paid_minor' => 25000,
-            'change_amount' => 0,
             'change_minor' => 0,
             'payment_method' => PaymentMethod::Cash->value,
             'payment_status' => 'paid',
@@ -155,8 +152,8 @@ class PaymentMethodDisplayTest extends TestCase
             'transaction_id' => $transaction->id,
             'product_id' => Product::factory()->create()->id,
             'quantity' => 1,
-            'unit_price' => 25000,
-            'subtotal' => 25000,
+            'unit_price_minor' => 25000,
+            'subtotal_minor' => 25000,
         ]);
 
         $response = $this->actingAs($this->user)
@@ -184,8 +181,8 @@ class PaymentMethodDisplayTest extends TestCase
             'transaction_id' => $transaction->id,
             'product_id' => Product::factory()->create()->id,
             'quantity' => 1,
-            'unit_price' => 25000,
-            'subtotal' => 25000,
+            'unit_price_minor' => 25000,
+            'subtotal_minor' => 25000,
         ]);
 
         $this->actingAs($this->user)

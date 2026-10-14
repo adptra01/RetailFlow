@@ -178,8 +178,8 @@ $methodColor = function (string $method): string {
                             {{ __('Items') }}
                         </flux:table.column>
 
-                        <flux:table.column sortable :sorted="$sortBy === 'total_amount'" :direction="$sortDirection"
-                            wire:click="sort('total_amount')">
+                        <flux:table.column sortable :sorted="$sortBy === 'total_minor'" :direction="$sortDirection"
+                            wire:click="sort('total_minor')">
                             {{ __('Total') }}
                         </flux:table.column>
 

@@ -4,6 +4,7 @@ use App\Models\Category;
 use App\Models\SalesReturn;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Number;
 
@@ -33,7 +34,8 @@ $summary = computed(function () {
     $query = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
         ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
 
-    $totalRevenue = (float) $query->sum('total_amount');
+    // §17.1: agregat dibaca dari kolom minor unit, lalu dikonversi untuk tampilan.
+    $totalRevenue = (new Money((int) $query->sum('total_minor')))->major();
     $totalTransactions = $query->count();
     $totalItems = TransactionItem::whereHas('transaction', function ($q) {
         $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
@@ -56,22 +58,22 @@ $summary = computed(function () {
         'total_items_sold' => $totalItems,
         'cancelled_transactions' => $cancelledTransactions,
         'returns_count' => (clone $returnsQuery)->count(),
-        'returns_total' => (int) (clone $returnsQuery)->sum('total_minor'),
-        'returns_refund' => (int) (clone $returnsQuery)->sum('refund_minor'),
+        'returns_total' => (new Money((int) (clone $returnsQuery)->sum('total_minor')))->major(),
+        'returns_refund' => (new Money((int) (clone $returnsQuery)->sum('refund_minor')))->major(),
     ];
 });
 
 $dailyRevenueData = computed(function () {
     $sales = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
         ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
-        ->selectRaw('DATE(created_at) as date, SUM(total_amount) as revenue')
+        ->selectRaw('DATE(created_at) as date, SUM(total_minor) as revenue')
         ->groupBy('date')
         ->orderBy('date')
         ->get();
 
     return [
         'labels' => $sales->map(fn ($s) => Carbon::parse($s->date)->format('d M'))->toArray(),
-        'series' => $sales->map(fn ($s) => (float) $s->revenue)->toArray(),
+        'series' => $sales->map(fn ($s) => (new Money((int) $s->revenue))->major())->toArray(),
     ];
 });
 
@@ -87,18 +89,18 @@ $paymentMethodData = computed(function () {
 
     $rows = Transaction::whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
         ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
-        ->selectRaw('payment_method, SUM(total_amount) as total')
+        ->selectRaw('payment_method, SUM(total_minor) as total')
         ->groupBy('payment_method')
         ->get();
 
     return [
         'labels' => $rows->map(fn ($r) => $labels_map[$r->payment_method] ?? $r->payment_method)->toArray(),
-        'series' => $rows->map(fn ($r) => (float) $r->total)->toArray(),
+        'series' => $rows->map(fn ($r) => (new Money((int) $r->total))->major())->toArray(),
     ];
 });
 
 $topProductsData = computed(function () {
-    $rows = TransactionItem::selectRaw('product_id, SUM(subtotal) as revenue')
+    $rows = TransactionItem::selectRaw('product_id, SUM(subtotal_minor) as revenue')
         ->whereHas('transaction', function ($q) {
             $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
                 ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID);
@@ -111,7 +113,7 @@ $topProductsData = computed(function () {
 
     return [
         'labels' => $rows->map(fn ($r) => $r->product?->name ?? __('Unknown'))->toArray(),
-        'series' => $rows->map(fn ($r) => (float) $r->revenue)->toArray(),
+        'series' => $rows->map(fn ($r) => (new Money((int) $r->revenue))->major())->toArray(),
     ];
 });
 
@@ -153,7 +155,7 @@ $receivablesReport = computed(function () {
 });
 
 $categoryData = computed(function () {
-    $rows = TransactionItem::selectRaw('products.category_id, SUM(transaction_items.subtotal) as revenue')
+    $rows = TransactionItem::selectRaw('products.category_id, SUM(transaction_items.subtotal_minor) as revenue')
         ->join('products', 'transaction_items.product_id', '=', 'products.id')
         ->whereHas('transaction', function ($q) {
             $q->whereBetween('created_at', [$this->from_date.' 00:00:00', $this->to_date.' 23:59:59'])
@@ -167,7 +169,7 @@ $categoryData = computed(function () {
 
     return [
         'labels' => $rows->map(fn ($r) => $categories[$r->category_id] ?? __('Unknown'))->toArray(),
-        'series' => $rows->map(fn ($r) => (float) $r->revenue)->toArray(),
+        'series' => $rows->map(fn ($r) => (new Money((int) $r->revenue))->major())->toArray(),
     ];
 });
 

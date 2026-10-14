@@ -15,11 +15,16 @@ class SalesReturnFactory extends Factory
     public function definition(): array
     {
         $transaction = Transaction::inRandomOrder()->first() ?? Transaction::factory();
+        $totalMinor = fake()->numberBetween(5000, 200000);
 
         return [
             'transaction_id' => $transaction->id,
             'customer_id' => $transaction->customer_id ?? Customer::inRandomOrder()->first()?->id,
-            'total' => fake()->randomFloat(2, 5000, 200000),
+            'subtotal_minor' => $totalMinor,
+            'discount_minor' => 0,
+            'total_minor' => $totalMinor,
+            'receivable_adjustment_minor' => 0,
+            'refund_minor' => $totalMinor,
             'reason' => fake()->sentence(),
             'user_id' => User::inRandomOrder()->first()?->id ?? User::factory(),
             'created_at' => fake()->dateTimeBetween('-30 days', 'now'),

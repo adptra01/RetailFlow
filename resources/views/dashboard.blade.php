@@ -3,6 +3,7 @@
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Number;
 
@@ -10,9 +11,10 @@ use function Livewire\Volt\computed;
 
 $revenueToday = computed(function () {
     // §17.4: transaksi batal (void) tidak dihitung sebagai omzet.
-    return Transaction::whereDate('created_at', today())
+    // §17.1: agregat dibaca dari kolom minor unit, lalu dikonversi untuk tampilan.
+    return (new Money((int) Transaction::whereDate('created_at', today())
         ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
-        ->sum('total_amount');
+        ->sum('total_minor')))->major();
 });
 
 $transactionsToday = computed(function () {
@@ -39,7 +41,7 @@ $salesTrendData = computed(function () {
         ]);
     }
 
-    $sales = Transaction::selectRaw('DATE(created_at) as date, SUM(total_amount) as total')
+    $sales = Transaction::selectRaw('DATE(created_at) as date, SUM(total_minor) as total')
         ->whereDate('created_at', '>=', today()->subDays(6))
         ->where('payment_status', '!=', Transaction::PAYMENT_STATUS_VOID)
         ->groupBy('date')
@@ -49,7 +51,7 @@ $salesTrendData = computed(function () {
         if ($days->has($sale->date)) {
             $days->put($sale->date, [
                 'label' => Carbon::parse($sale->date)->format('d M'),
-                'total' => (float) $sale->total,
+                'total' => (new Money((int) $sale->total))->major(),
             ]);
         }
     }

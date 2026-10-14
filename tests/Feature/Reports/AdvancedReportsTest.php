@@ -188,8 +188,8 @@ class AdvancedReportsTest extends TestCase
             'transaction_id' => $transaction->id,
             'product_id' => $product->id,
             'quantity' => 2,
-            'unit_price' => 10000,
-            'subtotal' => 20000,
+            'unit_price_minor' => 10000,
+            'subtotal_minor' => 20000,
         ]);
 
         $report = app(GenerateMarginHistoryReport::class)->handle([
@@ -225,8 +225,8 @@ class AdvancedReportsTest extends TestCase
                     'transaction_id' => $t->id,
                     'product_id' => $product->id,
                     'quantity' => 1,
-                    'unit_price' => 10000,
-                    'subtotal' => 10000,
+                    'unit_price_minor' => 10000,
+                    'subtotal_minor' => 10000,
                 ]);
             });
 
@@ -300,8 +300,8 @@ class AdvancedReportsTest extends TestCase
             'transaction_id' => $transaction->id,
             'product_id' => $product->id,
             'quantity' => 2,
-            'unit_price' => 10000,
-            'subtotal' => 20000,
+            'unit_price_minor' => 10000,
+            'subtotal_minor' => 20000,
         ]);
 
         $rows = app(GeneratePurchaseVsSalesReport::class)->handle([

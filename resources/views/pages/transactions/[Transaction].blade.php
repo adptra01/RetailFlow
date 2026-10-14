@@ -5,6 +5,7 @@ use App\Models\Category;
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Flux\Flux;
 use Illuminate\Validation\Rule;
 use Livewire\WithPagination;
@@ -158,25 +159,31 @@ $save = function () {
         return;
     }
 
+    // §17.1: nilai kebenaran uang penjualan hanya disimpan pada kolom minor.
     $this->transaction->update([
-        'customer' => $this->customer,
-        'total_amount' => $this->totalAmount,
-        'paid_amount' => $this->paid_amount,
-        'change_amount' => $this->changeAmount,
+        'customer_name' => $this->customer,
+        'subtotal_minor' => Money::fromMajor((float) $this->totalAmount)->minor(),
+        'total_minor' => Money::fromMajor((float) $this->totalAmount)->minor(),
+        'paid_minor' => Money::fromMajor((float) ($this->paid_amount ?? 0))->minor(),
+        'change_minor' => Money::fromMajor((float) $this->changeAmount)->minor(),
         'payment_method' => $this->payment_method,
         'notes' => $this->notes ?? '',
     ]);
 
     $this->transaction->items()->delete();
 
+    $tenantId = $this->transaction->tenant_id;
     $items = [];
     foreach ($this->cart as $item) {
+        // insert() melewati event model, jadi tenant_id diisi eksplisit (§12).
         $items[] = [
             'transaction_id' => $this->transaction->id,
+            'tenant_id' => $tenantId,
             'product_id' => $item['product_id'],
             'quantity' => $item['quantity'],
-            'unit_price' => $item['unit_price'],
-            'subtotal' => $item['subtotal'],
+            'unit_price_minor' => Money::fromMajor((float) $item['unit_price'])->minor(),
+            'discount_minor' => 0,
+            'subtotal_minor' => Money::fromMajor((float) $item['subtotal'])->minor(),
             'created_at' => now(),
             'updated_at' => now(),
         ];

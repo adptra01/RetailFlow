@@ -5,7 +5,9 @@ namespace App\Models;
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasSyncIdentity;
 use App\Models\Concerns\JournalSyncChanges;
+use App\Support\Money\Money;
 use Database\Factories\TransactionFactory;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -28,8 +30,8 @@ class Transaction extends Model
     protected $attributes = ['version' => 1];
 
     protected $fillable = [
-        'user_id', 'customer_id', 'customer_name', 'invoice_number', 'total_amount',
-        'paid_amount', 'change_amount', 'payment_method', 'payment_status', 'payment_verification', 'notes',
+        'user_id', 'customer_id', 'customer_name', 'invoice_number',
+        'payment_method', 'payment_status', 'payment_verification', 'notes',
         'tenant_id', 'location_id', 'device_id', 'client_request_id',
         'subtotal_minor', 'discount_minor', 'total_minor', 'paid_minor', 'change_minor',
         // FR-06: snapshot promosi (diterima dari aksi domain CreateSale).
@@ -41,9 +43,6 @@ class Transaction extends Model
     protected function casts(): array
     {
         return [
-            'total_amount' => 'float',
-            'paid_amount' => 'float',
-            'change_amount' => 'float',
             'subtotal_minor' => 'integer',
             'discount_minor' => 'integer',
             'total_minor' => 'integer',
@@ -56,6 +55,30 @@ class Transaction extends Model
             'stock_restored' => 'boolean',
             'version' => 'integer',
         ];
+    }
+
+    /**
+     * Alias baca satuan major (§17.1) — BUKAN kolom.
+     *
+     * Nilai kebenaran uang penjualan hanya ada pada kolom `*_minor`. Nama lama
+     * (`total_amount`, `paid_amount`, `change_amount`) dipertahankan sebagai
+     * turunan baca supaya tampilan pra-rebuild tidak perlu diubah dan tidak ada
+     * penulis kedua. Untuk agregat SQL, gunakan `*_minor` (accessor tidak
+     * berlaku di level query builder).
+     */
+    public function totalAmount(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money((int) $this->total_minor))->major());
+    }
+
+    public function paidAmount(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money((int) $this->paid_minor))->major());
+    }
+
+    public function changeAmount(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money((int) $this->change_minor))->major());
     }
 
     /**

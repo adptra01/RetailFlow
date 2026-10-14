@@ -5,6 +5,7 @@ namespace App\Actions\Reports;
 use App\Models\Product;
 use App\Models\PurchaseOrderItem;
 use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Illuminate\Support\Collection;
 
 /**
@@ -46,9 +47,9 @@ class GeneratePurchaseVsSalesReport
                 'qty' => 0, 'cost' => 0, 'avg_cost' => 0,
             ]);
 
-            $revenue = $sale['revenue'];
+            $revenue = (new Money((int) $sale['revenue']))->major();
             $cogs = $sale['cogs'];
-            $purchaseCost = $purchase['cost'];
+            $purchaseCost = (new Money((int) $purchase['cost']))->major();
             $purchaseQty = $purchase['qty'];
 
             $margin = $revenue - $cogs;
@@ -88,7 +89,7 @@ class GeneratePurchaseVsSalesReport
                 products.name as name,
                 products.sku as sku,
                 SUM(transaction_items.quantity) as qty,
-                SUM(transaction_items.subtotal) as revenue,
+                SUM(transaction_items.subtotal_minor) as revenue,
                 SUM(products.buy_price * transaction_items.quantity) as cogs
             ')
             ->join('transactions', 'transaction_items.transaction_id', '=', 'transactions.id')

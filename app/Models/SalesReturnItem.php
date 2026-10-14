@@ -30,8 +30,6 @@ class SalesReturnItem extends Model
     protected $fillable = [
         'sales_return_id', 'transaction_item_id', 'product_id', 'product_unit_id',
         'qty', 'unit_price_minor', 'discount_minor', 'subtotal_minor', 'reason',
-        // Cermin desimal transisional untuk UI pra-rebuild.
-        'price', 'subtotal',
         'tenant_id',
     ];
 
@@ -42,8 +40,6 @@ class SalesReturnItem extends Model
             'unit_price_minor' => 'integer',
             'discount_minor' => 'integer',
             'subtotal_minor' => 'integer',
-            'price' => 'decimal:2',
-            'subtotal' => 'decimal:2',
             'version' => 'integer',
         ];
     }
@@ -71,5 +67,18 @@ class SalesReturnItem extends Model
     public function unitPrice(): Attribute
     {
         return Attribute::make(get: fn () => (new Money($this->unit_price_minor))->major());
+    }
+
+    /**
+     * Alias baca satuan major (§17.1) — turunan dari `*_minor`, bukan kolom.
+     */
+    public function price(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money($this->unit_price_minor))->major());
+    }
+
+    public function subtotal(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money($this->subtotal_minor))->major());
     }
 }

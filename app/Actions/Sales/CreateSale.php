@@ -260,10 +260,6 @@ class CreateSale
             'total_minor' => $total->minor(),
             'paid_minor' => $paid->minor(),
             'change_minor' => $change->minor(),
-            // Transitional decimal mirror so the pre-rebuild UI keeps working.
-            'total_amount' => $total->major(),
-            'paid_amount' => $paid->major(),
-            'change_amount' => $change->major(),
             'tenant_id' => $tenantId,
             'location_id' => $data['location_id'] ?? null,
             'device_id' => $data['device_id'] ?? null,
@@ -288,9 +284,6 @@ class CreateSale
                 'promotion_id' => isset($item['promotion_id']) ? (int) $item['promotion_id'] : null,
                 'promotion_name' => $item['promotion_name'] ?? null,
                 'subtotal_minor' => $lineSubtotal->minor(),
-                // Transitional decimal mirror.
-                'unit_price' => $unitPrice->major(),
-                'subtotal' => $lineSubtotal->major(),
                 'tenant_id' => $tenantId,
             ]);
 

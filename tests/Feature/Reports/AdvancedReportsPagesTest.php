@@ -50,8 +50,8 @@ class AdvancedReportsPagesTest extends TestCase
             'transaction_id' => $tx->id,
             'product_id' => $product->id,
             'quantity' => 1,
-            'unit_price' => 10000,
-            'subtotal' => 10000,
+            'unit_price_minor' => 10000,
+            'subtotal_minor' => 10000,
         ]);
 
         $response = $this->actingAs($user)->get('/reports/margin');
@@ -168,8 +168,8 @@ class AdvancedReportsPagesTest extends TestCase
             'transaction_id' => $tx->id,
             'product_id' => $product->id,
             'quantity' => 2,
-            'unit_price' => 10000,
-            'subtotal' => 20000,
+            'unit_price_minor' => 10000,
+            'subtotal_minor' => 20000,
         ]);
 
         $response = $this->actingAs($user)->get('/reports/purchase-vs-sales');

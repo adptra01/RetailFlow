@@ -3,6 +3,7 @@
 namespace App\Actions\Reports;
 
 use App\Models\TransactionItem;
+use App\Support\Money\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
@@ -10,7 +11,8 @@ use Illuminate\Support\Collection;
  * Laporan Margin Historis (Margin History Report).
  *
  * Menghitung margin kotor per periode (harian/mingguan/bulanan) berdasarkan:
- * - Revenue: sum(subtotal) dari TransactionItem
+ * - Revenue: sum(subtotal_minor) dari TransactionItem (§17.1), dikonversi major
+ *   untuk tampilan
  * - COGS: sum(buy_price * quantity) dari TransactionItem via Product
  * - Margin: Revenue - COGS
  * - Margin %: (Margin / Revenue) * 100
@@ -39,7 +41,7 @@ class GenerateMarginHistoryReport
         $query = TransactionItem::query()
             ->selectRaw('
                 DATE(transactions.created_at) as sale_date,
-                SUM(transaction_items.subtotal) as revenue,
+                SUM(transaction_items.subtotal_minor) as revenue,
                 SUM(products.buy_price * transaction_items.quantity) as cogs
             ')
             ->join('transactions', 'transaction_items.transaction_id', '=', 'transactions.id')
@@ -65,7 +67,7 @@ class GenerateMarginHistoryReport
             ->get()
             ->map(fn ($row) => [
                 'sale_date' => $row->sale_date,
-                'revenue' => (float) $row->revenue,
+                'revenue' => (new Money((int) $row->revenue))->major(),
                 'cogs' => (float) $row->cogs,
             ]);
 
@@ -143,7 +145,7 @@ class GenerateMarginHistoryReport
                 products.name as product_name,
                 products.sku as product_sku,
                 SUM(transaction_items.quantity) as qty_sold,
-                SUM(transaction_items.subtotal) as revenue,
+                SUM(transaction_items.subtotal_minor) as revenue,
                 SUM(products.buy_price * transaction_items.quantity) as cogs
             ')
             ->join('transactions', 'transaction_items.transaction_id', '=', 'transactions.id')
@@ -168,7 +170,7 @@ class GenerateMarginHistoryReport
         $raw = $query->get();
 
         return $raw->map(function ($row) {
-            $revenue = (float) $row->revenue;
+            $revenue = (new Money((int) $row->revenue))->major();
             $cogs = (float) $row->cogs;
             $margin = $revenue - $cogs;
             $marginPct = $revenue > 0 ? round(($margin / $revenue) * 100, 2) : 0;

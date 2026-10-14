@@ -14,7 +14,6 @@ use App\Models\Supplier;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
-use App\Support\Money\Money;
 use Database\Seeders\Concerns\SeedsDemoTenant;
 use Illuminate\Database\Seeder;
 
@@ -73,9 +72,8 @@ class ReturnSeeder extends Seeder
                 foreach ($returnItems as $item) {
                     $qty = rand(1, $item->quantity);
                     $sold = (int) $item->quantity;
-                    // Minor adalah sumber kebenaran; cermin desimal lama hanya
-                    // dipakai bila data demo sebelumnya belum punya minor.
-                    $lineMinor = (int) ($item->subtotal_minor ?: Money::fromMajor((float) $item->subtotal)->minor());
+                    // Minor adalah satu-satunya sumber kebenaran (§17.1).
+                    $lineMinor = (int) $item->subtotal_minor;
                     // Nilai retur proporsional seperti domain (setelah diskon baris).
                     $subtotalMinor = $sold > 0 ? (int) round($lineMinor * $qty / $sold) : 0;
                     $unitPriceMinor = $qty > 0 ? (int) round($subtotalMinor / $qty) : 0;
@@ -90,9 +88,6 @@ class ReturnSeeder extends Seeder
                         'unit_price_minor' => $unitPriceMinor,
                         'discount_minor' => 0,
                         'subtotal_minor' => $subtotalMinor,
-                        // Cermin desimal legacy (major, bukan minor).
-                        'price' => (new Money($unitPriceMinor))->major(),
-                        'subtotal' => (new Money($subtotalMinor))->major(),
                         'reason' => $return->reason,
                         'tenant_id' => $tenant->getKey(),
                     ]);
@@ -107,7 +102,6 @@ class ReturnSeeder extends Seeder
                     'receivable_adjustment_minor' => 0,
                     'refund_minor' => $totalMinor,
                     'stock_restored' => false,
-                    'total' => (new Money($totalMinor))->major(),
                 ]);
             }
         }

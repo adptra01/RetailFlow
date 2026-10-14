@@ -1,3 +1,39 @@
+# Rebuild POS Universal — Fase 5: Satu Sumber Kebenaran Uang Penjualan — Cermin Desimal Legacy Dihapus (Increment 57) (belum dirilis)
+
+**Tanggal:** 15 Oktober 2026
+**Referensi:** `.ai/plan/PRD, TDD, SAD.md` (§17.1 nilai uang integer minor unit; §17.4 void & koreksi; §12 isolasi tenant; FR-09 laporan penjualan/margin). Perintah: `php artisan migrate` / `db:seed`.
+
+## Latar
+Sejak minor unit diperkenalkan (`add_idempotency_and_minor_units_to_sales_tables`), tabel penjualan menulis **dua** kolom untuk uang: `*_minor` (nilai kebenaran) **dan** kolom desimal lama (`transactions.total_amount/paid_amount/change_amount`, `transaction_items.unit_price/subtotal`, `sales_returns.total`, `sales_return_items.price/subtotal`) sebagai "cermin transisional" bagi UI pra-rebuild. Ini melanggar §17.1: ada dua sumber kebenaran yang bisa menyimpang, dan setiap penulis harus ingat menulis dua tempat.
+
+Pembacanya tersebar: dashboard, daftar/struk transaksi, laporan penjualan (`/reports`), dan **laporan lanjutan** (margin, purchase-vs-sales) yang menjumlah kolom desimal lewat SQL mentah. Selama cermin ada, menghapusnya akan memutus tampilan.
+
+## Keputusan desain
+- **Alias baca, bukan kolom.** Nama lama (`total_amount`, `paid_amount`, `change_amount`, `unit_price`, `subtotal`, `price`, `total`) dipertahankan sebagai **accessor turunan** `*_minor` lewat `Money` — jadi tampilan Blade pra-rebuild tidak perlu diubah, tetapi tidak ada lagi penulis kedua. Accessor tidak berlaku di tingkat query builder, maka agregat SQL dipindahkan ke `*_minor` secara eksplisit.
+- **Konversi lewat `Money`, tidak ada `/100` tetap** — ekspresi tidak bergantung `minor_exponent` (§17.1). Saat ini exponent 0 (IDR), sehingga nilai tampilan tidak berubah (peralihan aman nilai), tetapi ekspresi tetap benar bila exponent berubah.
+- **Agregat minor lalu konversi di PHP.** `SUM(total_minor)`/`SUM(subtotal_minor)` di dashboard, `/reports`, dan aksi laporan lanjutan; nilai uang master produk (`buy_price`) masih desimal major sehingga konversi dilakukan di titik tampilan agar satuan konsisten.
+- **`down()` hanya memulihkan skema, bukan data.** Kolom desimal dikembalikan (berisi 0); nilai kebenaran tetap pada `*_minor`.
+
+## Perubahan
+- **Migrasi baru** `2026_10_13_240000_drop_legacy_money_columns_for_sales` — menghapus kolom desimal legacy penjualan di semua driver via `Schema::hasColumn()` (tidak berefek bila sudah hilang).
+- **`app/Models/Transaction.php`, `TransactionItem.php`, `SalesReturn.php`, `SalesReturnItem.php`** — hapus kolom legacy dari `$fillable`/`casts`; tambah accessor `totalAmount/paidAmount/changeAmount`, `unitPrice/subtotal`, `total`, `price/subtotal`.
+- **`app/Actions/Sales/CreateSale.php`, `CreateSalesReturn.php`** — **hentikan dual-write**: hanya kolom `*_minor` yang ditulis.
+- **Views** — `dashboard.blade.php`, `pages/reports/index.blade.php`, `pages/transactions/index.blade.php` (sort), `pages/transactions/[Transaction].blade.php` (halaman edit legacy: kini menulis `*_minor`, memperbaiki `customer` → `customer_name`, dan mengisi `tenant_id` eksplisit pada `insert()` item yang sebelumnya NULL).
+- **`app/Actions/Reports/GenerateMarginHistoryReport.php`, `GeneratePurchaseVsSalesReport.php`** — agregat `subtotal_minor` + konversi `Money`.
+- **Factories** — `TransactionFactory`, `TransactionItemFactory`, `SalesReturnFactory`, `SalesReturnItemFactory` menulis integer minor.
+- **`database/seeders/ReturnSeeder.php`** — hapus cermin desimal.
+- **Tes** — `DemoSeederTest` (kontrak: kolom legacy sudah tidak ada), `ReportsTest`, `SalesReportTest`, `AdvancedReportsTest`, `AdvancedReportsPagesTest`, `PaymentMethodDisplayTest`, `SaleApiTest` dialihkan ke kolom minor.
+
+## Pengujian
+- Suite **914 passed / 0 failed / 4 skipped (3718 assertions)** — dikonfirmasi 2× (sebelum & sesudah Pint). Pint: 491 file, tanpa perbaikan.
+- Diverifikasi juga di **MySQL produksi** (database terpisah, lalu dihapus): `migrate:fresh` + `db:seed` tanpa error; query `information_schema` membuktikan seluruh kolom legacy penjualan **hilang**; 0 baris uang minor nol, 0 baris `tenant_id` NULL.
+
+## Status suite
+- **914 passed / 0 failed / 4 skipped** (3718 assertions).
+- Sisa pekerjaan Fase 5: menyatukan dua jalur piutang (`receivables` domain vs `customer_payments` legacy), memindahkan **harga produk/unit** (`products.price/buy_price/purchase_price/price_grosir`, `product_units.*`) ke minor unit (masih desimal major — laporan margin masih membacanya), adaptor payment gateway/QRIS dinamis (menunggu penyedia), OCR (FR-03), barcode kamera, multi-cabang/transfer stok, dokumentasi Fase 6, dead code `app/Models/Recipe.php`, `RolePermissionSeeder` legacy.
+
+---
+
 # Rebuild POS Universal — Fase 5: Data Demo Ber-tenant & Minor Unit (Seeder) (Increment 56) (belum dirilis)
 
 **Tanggal:** 13 Oktober 2026

@@ -43,10 +43,6 @@ class SalesReportTest extends TestCase
         return Transaction::forceCreate(array_merge([
             'invoice_number' => 'INV-'.Str::random(10),
             'customer_name' => 'Umum',
-            // mirror kolom legacy (NOT NULL tanpa default)
-            'total_amount' => 15000,
-            'paid_amount' => 15000,
-            'change_amount' => 0,
             'total_minor' => 15000,
             'subtotal_minor' => 15000,
             'discount_minor' => 0,
@@ -66,8 +62,6 @@ class SalesReportTest extends TestCase
             'unit_price_minor' => $subtotalMinor + $discountMinor,
             'discount_minor' => $discountMinor,
             'subtotal_minor' => $subtotalMinor,
-            'unit_price' => 0,
-            'subtotal' => 0,
         ]);
     }
 
@@ -238,9 +232,6 @@ class SalesReportTest extends TestCase
         Transaction::create([
             'invoice_number' => 'INV-OTHER',
             'customer_name' => 'Tenant Lain',
-            'total_amount' => 99999,
-            'paid_amount' => 99999,
-            'change_amount' => 0,
             'total_minor' => 99999,
             'subtotal_minor' => 99999,
             'paid_minor' => 99999,

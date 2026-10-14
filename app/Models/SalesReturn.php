@@ -34,8 +34,6 @@ class SalesReturn extends Model
         'transaction_id', 'customer_id', 'reason',
         'subtotal_minor', 'discount_minor', 'total_minor',
         'receivable_adjustment_minor', 'refund_minor', 'stock_restored',
-        // Cermin desimal transisional untuk UI pra-rebuild.
-        'total',
         'user_id', 'location_id', 'device_id', 'client_request_id', 'tenant_id',
     ];
 
@@ -48,7 +46,6 @@ class SalesReturn extends Model
             'receivable_adjustment_minor' => 'integer',
             'refund_minor' => 'integer',
             'stock_restored' => 'boolean',
-            'total' => 'decimal:2',
             'version' => 'integer',
         ];
     }
@@ -88,6 +85,11 @@ class SalesReturn extends Model
      * Memakai `Money` — bukan pembagian 100 tetap — karena exponent minor
      * berasal dari konfigurasi (§17.1).
      */
+    public function total(): Attribute
+    {
+        return Attribute::make(get: fn () => (new Money($this->total_minor))->major());
+    }
+
     public function subtotal(): Attribute
     {
         return Attribute::make(get: fn () => (new Money($this->subtotal_minor))->major());

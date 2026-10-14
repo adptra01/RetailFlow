@@ -58,9 +58,9 @@ class ReportsTest extends TestCase
                 'user_id' => $user->id,
                 'customer_name' => 'Test Customer',
                 'invoice_number' => 'INV-TEST-'.$i,
-                'total_amount' => 10000,
-                'paid_amount' => 10000,
-                'change_amount' => 0,
+                'total_minor' => 10000,
+                'paid_minor' => 10000,
+                'change_minor' => 0,
                 'payment_method' => 'cash',
             ]);
 
@@ -68,8 +68,8 @@ class ReportsTest extends TestCase
                 'transaction_id' => $transaction->id,
                 'product_id' => $product->id,
                 'quantity' => 1,
-                'unit_price' => 10000,
-                'subtotal' => 10000,
+                'unit_price_minor' => 10000,
+                'subtotal_minor' => 10000,
             ]);
         }
 
@@ -94,9 +94,9 @@ class ReportsTest extends TestCase
             'user_id' => $user->id,
             'customer_name' => 'Test Customer',
             'invoice_number' => 'INV-DAILY-1',
-            'total_amount' => 50000,
-            'paid_amount' => 50000,
-            'change_amount' => 0,
+            'total_minor' => 50000,
+            'paid_minor' => 50000,
+            'change_minor' => 0,
             'payment_method' => 'transfer',
         ]);
 
@@ -104,8 +104,8 @@ class ReportsTest extends TestCase
             'transaction_id' => $transaction->id,
             'product_id' => $product->id,
             'quantity' => 2,
-            'unit_price' => 25000,
-            'subtotal' => 50000,
+            'unit_price_minor' => 25000,
+            'subtotal_minor' => 50000,
         ]);
 
         $this->get(route('reports.index'))
@@ -128,9 +128,9 @@ class ReportsTest extends TestCase
             'user_id' => $user->id,
             'customer_name' => 'Test Customer',
             'invoice_number' => 'INV-OLD',
-            'total_amount' => 50000,
-            'paid_amount' => 50000,
-            'change_amount' => 0,
+            'total_minor' => 50000,
+            'paid_minor' => 50000,
+            'change_minor' => 0,
             'payment_method' => 'cash',
             'created_at' => now()->subMonth()->startOfMonth(),
         ]);
@@ -138,25 +138,25 @@ class ReportsTest extends TestCase
             'transaction_id' => $oldTransaction->id,
             'product_id' => $product->id,
             'quantity' => 1,
-            'unit_price' => 50000,
-            'subtotal' => 50000,
+            'unit_price_minor' => 50000,
+            'subtotal_minor' => 50000,
         ]);
 
         $newTransaction = Transaction::create([
             'user_id' => $user->id,
             'customer_name' => 'Test Customer',
             'invoice_number' => 'INV-NEW',
-            'total_amount' => 10000,
-            'paid_amount' => 10000,
-            'change_amount' => 0,
+            'total_minor' => 10000,
+            'paid_minor' => 10000,
+            'change_minor' => 0,
             'payment_method' => 'transfer',
         ]);
         TransactionItem::create([
             'transaction_id' => $newTransaction->id,
             'product_id' => $product->id,
             'quantity' => 1,
-            'unit_price' => 10000,
-            'subtotal' => 10000,
+            'unit_price_minor' => 10000,
+            'subtotal_minor' => 10000,
         ]);
 
         $this->get(route('reports.index'))
@@ -181,9 +181,9 @@ class ReportsTest extends TestCase
             'user_id' => $user->id,
             'customer_name' => 'Test Customer',
             'invoice_number' => 'INV-RETUR-1',
-            'total_amount' => 10000,
-            'paid_amount' => 10000,
-            'change_amount' => 0,
+            'total_minor' => 10000,
+            'paid_minor' => 10000,
+            'change_minor' => 0,
             'payment_method' => 'cash',
         ]);
 
@@ -194,7 +194,6 @@ class ReportsTest extends TestCase
             'subtotal_minor' => 10000,
             'total_minor' => 10000,
             'refund_minor' => 10000,
-            'total' => 10000,
             'user_id' => $user->id,
         ]);
 

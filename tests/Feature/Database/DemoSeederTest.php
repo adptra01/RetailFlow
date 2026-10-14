@@ -3,7 +3,6 @@
 namespace Tests\Feature\Database;
 
 use App\Models\Tenant;
-use App\Support\Money\Money;
 use App\Support\Tenancy\TenantContext;
 use Database\Seeders\BrandSeeder;
 use Database\Seeders\CategorySeeder;
@@ -12,6 +11,7 @@ use Database\Seeders\ProductSeeder;
 use Database\Seeders\TenantSeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -84,30 +84,21 @@ class DemoSeederTest extends TestCase
         $this->assertGreaterThan(0, $transactions->count());
 
         foreach ($transactions as $transaction) {
-            // Kolom desimal legacy hanya cermin: nilai kebenarannya wajib sama
-            // dengan kolom minor unit ketika dikonversi (§17.1).
+            // §17.1: satu sumber kebenaran — hanya kolom minor unit yang diisi.
+            // Transaksi kredit boleh `paid_minor` 0; kembalian hanya dari tunai.
             $this->assertGreaterThan(0, (int) $transaction->total_minor);
-            $this->assertSame(
-                Money::fromMajor((float) $transaction->total_amount)->minor(),
-                (int) $transaction->total_minor,
-            );
-            $this->assertSame(
-                Money::fromMajor((float) $transaction->paid_amount)->minor(),
-                (int) $transaction->paid_minor,
-            );
-            $this->assertSame(
-                Money::fromMajor((float) $transaction->change_amount)->minor(),
-                (int) $transaction->change_minor,
-            );
+            $this->assertGreaterThanOrEqual(0, (int) $transaction->paid_minor);
+            $this->assertGreaterThanOrEqual(0, (int) $transaction->change_minor);
         }
 
         foreach (DB::table('transaction_items')->get() as $item) {
             $this->assertGreaterThan(0, (int) $item->unit_price_minor);
-            $this->assertSame(
-                Money::fromMajor((float) $item->unit_price)->minor(),
-                (int) $item->unit_price_minor,
-            );
+            $this->assertGreaterThan(0, (int) $item->subtotal_minor);
         }
+
+        // Cermin desimal legacy sudah dihapus: tak ada lagi penulis kedua (§17.1).
+        $this->assertFalse(Schema::hasColumn('transactions', 'total_amount'));
+        $this->assertFalse(Schema::hasColumn('transaction_items', 'unit_price'));
 
         // Piutang demo lahir dari penjualan kredit, bukan ditulis manual.
         $this->assertGreaterThan(0, DB::table('transactions')->where('payment_status', 'credit')->count());
@@ -138,28 +129,23 @@ class DemoSeederTest extends TestCase
         $this->assertSame(0, DB::table('supplier_payments')->where('amount_minor', 0)->count());
     }
 
-    public function test_sales_return_demo_money_mirrors_minor_units(): void
+    public function test_sales_return_demo_money_is_stored_in_minor_units(): void
     {
         $this->seedDemo();
 
         foreach (DB::table('sales_returns')->get() as $return) {
             $this->assertGreaterThan(0, (int) $return->total_minor);
-            $this->assertSame(
-                (int) $return->total_minor,
-                Money::fromMajor((float) $return->total)->minor(),
-            );
+            $this->assertSame((int) $return->subtotal_minor, (int) $return->total_minor);
         }
 
         foreach (DB::table('sales_return_items')->get() as $item) {
-            $this->assertSame(
-                (int) $item->unit_price_minor,
-                Money::fromMajor((float) $item->price)->minor(),
-            );
-            $this->assertSame(
-                (int) $item->subtotal_minor,
-                Money::fromMajor((float) $item->subtotal)->minor(),
-            );
+            $this->assertGreaterThan(0, (int) $item->unit_price_minor);
+            $this->assertGreaterThan(0, (int) $item->subtotal_minor);
         }
+
+        // Kolom desimal legacy retur sudah dihapus (§17.1).
+        $this->assertFalse(Schema::hasColumn('sales_returns', 'total'));
+        $this->assertFalse(Schema::hasColumn('sales_return_items', 'price'));
     }
 
     public function test_seeders_run_individually_still_bind_the_default_tenant(): void
